@@ -1382,7 +1382,7 @@ func extractChoiceContent(choice map[string]any) string {
 		}
 	}
 	if delta, ok := choice["delta"].(map[string]any); ok {
-		if content := extractStructuredContent(delta["content"]); content != "" {
+		if content := deltaContentString(delta["content"]); content != "" {
 			return content
 		}
 		if extra, ok := delta["extra"].(map[string]any); ok {
@@ -1400,6 +1400,31 @@ func extractChoicePhase(choice map[string]any) string {
 	}
 	if delta, ok := choice["delta"].(map[string]any); ok {
 		return strings.TrimSpace(fmt.Sprint(delta["phase"]))
+	}
+	return ""
+}
+
+func deltaContentString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if text := deltaContentString(item); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	case map[string]any:
+		if text, ok := v["text"].(string); ok {
+			return text
+		}
+		for _, key := range []string{"content", "value", "output_text", "answer"} {
+			if text := deltaContentString(v[key]); text != "" {
+				return text
+			}
+		}
 	}
 	return ""
 }
