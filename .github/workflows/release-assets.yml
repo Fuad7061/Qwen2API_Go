@@ -1,9 +1,12 @@
 name: release-assets
 
 on:
-  release:
-    types:
-      - published
+  workflow_call:
+    inputs:
+      tag_name:
+        description: Release tag to build and upload, for example v0.2.0
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag_name:
@@ -21,7 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag_name }}
+          ref: ${{ inputs.tag_name }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -81,7 +84,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag_name }}
+          ref: ${{ inputs.tag_name }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -100,7 +103,7 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag_name }}
+          RELEASE_TAG: ${{ inputs.tag_name }}
           BINARY_NAME: ${{ matrix.binary_name }}
           ARCHIVE_EXT: ${{ matrix.archive_ext }}
         run: |
@@ -137,6 +140,6 @@ jobs:
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name || inputs.tag_name }}
+          tag_name: ${{ inputs.tag_name }}
           files: ${{ steps.package.outputs.archive_file }}
           fail_on_unmatched_files: true

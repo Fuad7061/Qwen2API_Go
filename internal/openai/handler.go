@@ -245,6 +245,7 @@ func (h *Handler) ResolveModel(ctx context.Context, requested string, chatType s
 	if err != nil {
 		return base, nil
 	}
+	ctx = bindAccountContext(ctx, session)
 
 	models, err := h.qwen.ListModels(ctx, session.Token)
 	if err != nil {
@@ -760,6 +761,10 @@ func (h *Handler) uploadDataURI(ctx context.Context, token string, raw string, f
 	return fileURL, nil
 }
 
+func bindAccountContext(ctx context.Context, session storage.Account) context.Context {
+	return qwen.WithAccountKey(ctx, session.BrowserSessionKey())
+}
+
 func convertContent(content any) any {
 	switch v := content.(type) {
 	case string:
@@ -848,6 +853,7 @@ func (h *Handler) listModelVariants(ctx context.Context, force bool) ([]map[stri
 	if err != nil {
 		return nil, err
 	}
+	ctx = bindAccountContext(ctx, session)
 
 	var models []qwen.Model
 	if force {
@@ -856,7 +862,7 @@ func (h *Handler) listModelVariants(ctx context.Context, force bool) ([]map[stri
 		models, err = h.qwen.ListModels(ctx, session.Token)
 	}
 	if err != nil {
-		h.accounts.RecordFailure(session.Email)
+		h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 		return nil, err
 	}
 	h.accounts.ResetFailure(session.Email)
@@ -1776,9 +1782,11 @@ func (h *Handler) generateAssetWithSession(ctx context.Context, requestedModel, 
 	if err != nil {
 		return "", err
 	}
+	ctx = bindAccountContext(ctx, session)
 	normalizedMessages := normalizeMessages(messages, chatType, thinkingModeFast)
 	normalizedMessages, err = h.uploadInlineMedia(ctx, session.Token, normalizedMessages)
 	if err != nil {
+		h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 		return "", err
 	}
 	chatID, err := h.qwen.NewChat(ctx, session.Token, model, chatType)
@@ -1786,6 +1794,7 @@ func (h *Handler) generateAssetWithSession(ctx context.Context, requestedModel, 
 		if allowGuestRefresh && session.IsGuest() && h.refreshGuestSession(ctx, session, err) == nil {
 			return h.generateAssetWithSession(ctx, requestedModel, chatType, size, messages, false)
 		}
+		h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 		return "", err
 	}
 
@@ -1799,6 +1808,7 @@ func (h *Handler) generateAssetWithSession(ctx context.Context, requestedModel, 
 		if allowGuestRefresh && session.IsGuest() && h.refreshGuestSession(ctx, session, err) == nil {
 			return h.generateAssetWithSession(ctx, requestedModel, chatType, size, messages, false)
 		}
+		h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 		return "", err
 	}
 	defer resp.Body.Close()
@@ -1808,17 +1818,20 @@ func (h *Handler) generateAssetWithSession(ctx context.Context, requestedModel, 
 		if allowGuestRefresh && session.IsGuest() && h.refreshGuestSession(ctx, session, err) == nil {
 			return h.generateAssetWithSession(ctx, requestedModel, chatType, size, messages, false)
 		}
+		h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 		return "", err
 	}
 	if result.UpstreamError != nil && result.UpstreamError.Retryable {
 		time.Sleep(800 * time.Millisecond)
 		resp, err = h.qwen.ChatCompletions(ctx, session.Token, chatID, body)
 		if err != nil {
+			h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 			return "", err
 		}
 		defer resp.Body.Close()
 		result, err = readAssetResult(resp.Body)
 		if err != nil {
+			h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 			return "", err
 		}
 	}
@@ -1826,6 +1839,7 @@ func (h *Handler) generateAssetWithSession(ctx context.Context, requestedModel, 
 		if allowGuestRefresh && session.IsGuest() && h.refreshGuestSession(ctx, session, result.UpstreamError) == nil {
 			return h.generateAssetWithSession(ctx, requestedModel, chatType, size, messages, false)
 		}
+		h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 		return "", result.UpstreamError
 	}
 

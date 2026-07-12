@@ -121,6 +121,9 @@ func New(cfg config.Config, keyring *auth.Keyring, openAIHandler *openai.Handler
 	handle("/api/refreshAccount", "admin", ensureMethod(http.MethodPost, withAdminKey(adminHandler.HandleRefreshAccount)))
 	handle("/api/refreshAllAccounts", "admin", ensureMethod(http.MethodPost, withAdminKey(adminHandler.HandleRefreshAllAccounts)))
 	handle("/api/forceRefreshAllAccounts", "admin", ensureMethod(http.MethodPost, withAdminKey(adminHandler.HandleForceRefreshAllAccounts)))
+	handle("/api/browser/session", "admin", ensureMethod(http.MethodGet, withAdminKey(adminHandler.HandleBrowserSessionSnapshot)))
+	handle("/api/browser/guest-cookies", "admin", ensureMethod(http.MethodPost, withAdminKey(adminHandler.HandleCaptureGuestBrowserSession)))
+	handle("/api/browser/capture-session", "admin", ensureMethod(http.MethodPost, withAdminKey(adminHandler.HandleCaptureBrowserSession)))
 	handle("/api/batchTasks/", "admin", ensureMethod(http.MethodGet, withAdminKey(adminHandler.HandleBatchTask)))
 	handle("/api/dashboard/stream", "admin", ensureMethod(http.MethodGet, withAdminKey(adminHandler.HandleDashboardStream)))
 

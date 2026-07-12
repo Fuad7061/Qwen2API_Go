@@ -17,14 +17,14 @@ const cleanupInterval = 1 * time.Hour
 const cleanupThreshold = 24 * time.Hour
 
 type Service struct {
-	cfg        config.Config
-	runtime    *config.Runtime
-	accounts   *account.Service
-	client     *qwen.Client
-	tracker    storage.ChatTracker
-	logger     *logging.Logger
-	stopCh     chan struct{}
-	wg         sync.WaitGroup
+	cfg      config.Config
+	runtime  *config.Runtime
+	accounts *account.Service
+	client   *qwen.Client
+	tracker  storage.ChatTracker
+	logger   *logging.Logger
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
 }
 
 func NewService(cfg config.Config, runtime *config.Runtime, accounts *account.Service, client *qwen.Client, tracker storage.ChatTracker, logger *logging.Logger) *Service {
@@ -121,10 +121,12 @@ func (s *Service) cleanupProgramChats() {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx = qwen.WithAccountKey(ctx, account.BrowserSessionKey())
 		err = s.client.DeleteChat(ctx, account.Token, usage.ChatID)
 		cancel()
 
 		if err != nil {
+			s.accounts.RecordFailureAndRefresh(context.Background(), account.Email)
 			s.logger.WarnModule("CLEANUP", "删除对话失败 email=%s chat_id=%s err=%v", usage.AccountEmail, usage.ChatID, err)
 			failed++
 		} else {
@@ -156,9 +158,11 @@ func (s *Service) cleanupAccountAllChats(acc storage.Account) {
 
 	for {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx = qwen.WithAccountKey(ctx, acc.BrowserSessionKey())
 		chats, err := s.client.ListChats(ctx, acc.Token, page)
 		cancel()
 		if err != nil {
+			s.accounts.RecordFailureAndRefresh(context.Background(), acc.Email)
 			s.logger.WarnModule("CLEANUP", "列出对话失败 email=%s page=%d err=%v", acc.Email, page, err)
 			break
 		}
@@ -171,9 +175,11 @@ func (s *Service) cleanupAccountAllChats(acc storage.Account) {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx = qwen.WithAccountKey(ctx, acc.BrowserSessionKey())
 			err := s.client.DeleteChat(ctx, acc.Token, chat.ID)
 			cancel()
 			if err != nil {
+				s.accounts.RecordFailureAndRefresh(context.Background(), acc.Email)
 				s.logger.WarnModule("CLEANUP", "删除对话失败 email=%s chat_id=%s err=%v", acc.Email, chat.ID, err)
 				failed++
 			} else {

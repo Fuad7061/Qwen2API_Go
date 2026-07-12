@@ -27,24 +27,27 @@ import (
 )
 
 const (
-	qwenWebVersion = "0.2.67"
+	qwenWebVersion = "0.2.68"
 	qwenBxVersion  = "2.5.36"
 )
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	logger     *logging.Logger
-	modelsMu   sync.RWMutex
-	models     []Model
-	modelsAt   time.Time
-	ssxmod     *ssxmod.Manager
-	guestMu    sync.RWMutex
-	guestAuth  guestAuthState
+	baseURL         string
+	httpClient      *http.Client
+	logger          *logging.Logger
+	modelsMu        sync.RWMutex
+	models          []Model
+	modelsAt        time.Time
+	ssxmod          *ssxmod.Manager
+	guestMu         sync.RWMutex
+	guestAuth       guestAuthState
+	browserAuth     browserAuthConfig
+	browserSessions browserSessionState
 }
 
 type cookieOptions struct {
 	includeGuestBootstrap bool
+	browserCookieHeader   string
 }
 
 func NewClient(cfg config.Config, logger *logging.Logger) *Client {
@@ -55,6 +58,11 @@ func NewClient(cfg config.Config, logger *logging.Logger) *Client {
 		}
 	}
 
+	browserTimeout := time.Duration(cfg.BrowserTimeoutSeconds) * time.Second
+	if browserTimeout <= 0 {
+		browserTimeout = defaultBrowserAuthTimeout
+	}
+
 	return &Client{
 		baseURL: strings.TrimRight(cfg.QwenChatProxyURL, "/"),
 		httpClient: &http.Client{
@@ -63,6 +71,12 @@ func NewClient(cfg config.Config, logger *logging.Logger) *Client {
 		},
 		logger: logger,
 		ssxmod: ssxmod.NewManager(),
+		browserAuth: browserAuthConfig{
+			Enabled:        cfg.BrowserAuthEnabled,
+			Headless:       cfg.BrowserHeadless,
+			ExecutablePath: cfg.BrowserExecutablePath,
+			Timeout:        browserTimeout,
+		},
 	}
 }
 
@@ -101,6 +115,7 @@ func (c *Client) newRequestWithOptions(ctx context.Context, method, path string,
 	if rawToken == "" {
 		fingerprint = guestRequestFingerprint()
 	}
+	browserSession := c.browserSessionForRequest(ctx, rawToken)
 
 	req.Header.Set("User-Agent", fingerprint.UserAgent)
 	req.Header.Set("Connection", "keep-alive")
@@ -136,6 +151,7 @@ func (c *Client) newRequestWithOptions(ctx context.Context, method, path string,
 	req.Header.Set("source", "web")
 	req.Header.Set("X-Request-Timestamp", strconv.FormatInt(time.Now().UnixMilli(), 10))
 	req.Header.Set("X-Request-Id", newRequestID())
+	c.applyBrowserSessionHeaders(req, browserSession, options)
 
 	if rawToken == "" {
 		req.Header.Set("Version", qwenWebVersion)
@@ -156,6 +172,7 @@ func (c *Client) newRequestWithOptions(ctx context.Context, method, path string,
 	}
 	cookieHeader, err := c.buildCookieHeader(ctx, rawToken, cookieOptions{
 		includeGuestBootstrap: options.IncludeAuth,
+		browserCookieHeader:   browserSessionCookieHeader(browserSession),
 	})
 	if err != nil {
 		return nil, err
@@ -176,6 +193,7 @@ func (c *Client) buildCookieHeader(ctx context.Context, token string, options co
 		}
 		mergeCookieHeader(cookies, guestCookie)
 	}
+	mergeCookieHeader(cookies, options.browserCookieHeader)
 	fillGuestCookieDefaults(cookies)
 	ssxmodITNA, ssxmodITNA2 := c.ssxmod.Get()
 	if strings.TrimSpace(ssxmodITNA) != "" {
@@ -217,6 +235,7 @@ func (c *Client) doOnce(req *http.Request) (*http.Response, error) {
 		c.logger.WarnModule("UPSTREAM", "upstream request failed method=%s url=%s duration=%s err=%v", req.Method, req.URL.String(), time.Since(start), err)
 		return nil, err
 	}
+	c.rememberAnonymousResponse(req, resp)
 	if err := decodeCompressedBody(resp); err != nil {
 		resp.Body.Close()
 		c.logger.WarnModule("UPSTREAM", "upstream decode failed method=%s url=%s duration=%s err=%v", req.Method, req.URL.String(), time.Since(start), err)
@@ -288,6 +307,13 @@ func (c *Client) cloneRequestWithRefreshedGuestCookie(req *http.Request) (*http.
 	cloned.Header.Del("Authorization")
 	cloned.Header.Set("Cookie", cookieHeader)
 	return cloned, nil
+}
+
+func browserSessionCookieHeader(session *BrowserSession) string {
+	if session == nil {
+		return ""
+	}
+	return session.Cookie
 }
 
 func requestBodyPreview(req *http.Request) string {
@@ -490,8 +516,10 @@ func (c *Client) NewChat(ctx context.Context, token, model, chatType string) (st
 	if strings.TrimSpace(normalizeBearerToken(token)) == "" {
 		chatMode = "guest"
 		body["chat_mode"] = chatMode
+		c.warmGuestNewChat(ctx)
 		requestOptions.Headers = http.Header{
 			"X-Request-Id": []string{newRequestID()},
+			"Priority":     []string{"u=0"},
 		}
 	}
 	body["chat_mode"] = chatMode
@@ -528,6 +556,9 @@ func (c *Client) NewChat(ctx context.Context, token, model, chatType string) (st
 	if chatID == "" {
 		return "", fmt.Errorf("生成 chat_id 失败: %s", previewValue(payload))
 	}
+	if strings.TrimSpace(normalizeBearerToken(token)) == "" {
+		c.warmGuestAfterNewChat(ctx)
+	}
 	return chatID, nil
 }
 
@@ -544,6 +575,7 @@ func (c *Client) ChatCompletions(ctx context.Context, token, chatID string, body
 	if strings.TrimSpace(normalizeBearerToken(token)) == "" {
 		requestOptions.Referer = c.baseURL + "/c/guest"
 		requestOptions.Headers.Set("X-Request-Id", newRequestID())
+		requestOptions.Headers.Set("Priority", "u=4")
 	}
 	req, err := c.newRequestWithOptions(ctx, http.MethodPost, "/api/v2/chat/completions?chat_id="+url.QueryEscape(chatID), token, body, requestOptions)
 	if err != nil {

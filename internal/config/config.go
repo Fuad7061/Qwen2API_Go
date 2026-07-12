@@ -32,6 +32,10 @@ type Config struct {
 	QwenChatProxyURL      string
 	QwenWeb2ControlPrompt string
 	ProxyURL              string
+	BrowserAuthEnabled    bool
+	BrowserHeadless       bool
+	BrowserExecutablePath string
+	BrowserTimeoutSeconds int
 	ChatCleanupMode       int
 	PromptOverrides       map[string]string
 }
@@ -73,6 +77,10 @@ func Load() Config {
 		QwenChatProxyURL:      getEnv("QWEN_CHAT_PROXY_URL", "https://chat.qwen.ai"),
 		QwenWeb2ControlPrompt: prompts.Resolve(promptOverrides, prompts.IDQwenWeb2Control),
 		ProxyURL:              os.Getenv("PROXY_URL"),
+		BrowserAuthEnabled:    getEnvBool("BROWSER_AUTH_ENABLED", true),
+		BrowserHeadless:       getEnvBool("BROWSER_HEADLESS", true),
+		BrowserExecutablePath: strings.TrimSpace(os.Getenv("BROWSER_EXECUTABLE_PATH")),
+		BrowserTimeoutSeconds: getEnvInt("BROWSER_TIMEOUT_SECONDS", 45),
 		ChatCleanupMode:       getEnvInt("CHAT_CLEANUP_MODE", 0),
 		PromptOverrides:       promptOverrides,
 	}

@@ -42,6 +42,7 @@ func (h *Handler) HandleUploads(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	ctx := bindAccountContext(r.Context(), session)
 
 	results := make([]map[string]any, 0, len(items))
 	for _, item := range items {
@@ -50,9 +51,9 @@ func (h *Handler) HandleUploads(w http.ResponseWriter, r *http.Request) {
 			filename = fmt.Sprintf("upload_%d%s", time.Now().UnixNano(), extensionForContentType(item.ContentType))
 		}
 
-		fileURL, fileID, err := h.qwen.UploadFile(r.Context(), session.Token, filename, item.Content, item.ContentType)
+		fileURL, fileID, err := h.qwen.UploadFile(ctx, session.Token, filename, item.Content, item.ContentType)
 		if err != nil {
-			h.accounts.RecordFailure(session.Email)
+			h.accounts.RecordFailureAndRefresh(ctx, session.Email)
 			writeJSON(w, http.StatusBadGateway, map[string]any{
 				"error": map[string]any{"message": err.Error()},
 			})

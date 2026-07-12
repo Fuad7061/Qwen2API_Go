@@ -31,10 +31,10 @@ func TestFileAndRedisStoresHaveConsistentSemantics(t *testing.T) {
 	}
 
 	initial := []Account{
-		{Email: "a@example.com", Password: "p1", Token: "t1", Expires: 1710000000},
-		{Email: "b@example.com", Password: "p2", Token: "t2", Expires: 1720000000},
+		{Email: "a@example.com", Password: "p1", Token: "t1", Cookie: "cna=a-cookie", Expires: 1710000000},
+		{Email: "b@example.com", Password: "p2", Token: "t2", Cookie: "cna=b-cookie", Expires: 1720000000},
 	}
-	updated := Account{Email: "a@example.com", Password: "p1x", Token: "t1x", Expires: 1730000000}
+	updated := Account{Email: "a@example.com", Password: "p1x", Token: "t1x", Cookie: "cna=a-cookie-new", Expires: 1730000000}
 
 	for name, store := range stores {
 		t.Run(name, func(t *testing.T) {
@@ -78,6 +78,35 @@ func TestFileAndRedisStoresHaveConsistentSemantics(t *testing.T) {
 			}
 			if len(got) != 0 {
 				t.Fatalf("expected empty accounts after overwrite, got %#v", got)
+			}
+
+			sessions := map[string]BrowserSession{
+				"guest": {
+					Headers: map[string][]string{
+						"User-Agent": {"Persisted Browser"},
+					},
+					Cookie:      "cna=test-cna",
+					Guest:       true,
+					HasCookie:   true,
+					CookieNames: []string{"cna"},
+				},
+			}
+			if err := store.SaveBrowserSessions(sessions); err != nil {
+				t.Fatalf("SaveBrowserSessions() error = %v", err)
+			}
+			loadedSessions, err := store.LoadBrowserSessions()
+			if err != nil {
+				t.Fatalf("LoadBrowserSessions() error = %v", err)
+			}
+			gotSession, ok := loadedSessions["guest"]
+			if !ok {
+				t.Fatalf("expected guest browser session, got %#v", loadedSessions)
+			}
+			if gotSession.Cookie != "cna=test-cna" {
+				t.Fatalf("Cookie = %q, want cna=test-cna", gotSession.Cookie)
+			}
+			if got := gotSession.Headers["User-Agent"]; len(got) != 1 || got[0] != "Persisted Browser" {
+				t.Fatalf("Headers = %#v, want persisted browser headers", gotSession.Headers)
 			}
 		})
 	}

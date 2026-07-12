@@ -18,6 +18,7 @@ import (
 	"qwen2api/internal/metrics"
 	"qwen2api/internal/openai"
 	"qwen2api/internal/prompts"
+	"qwen2api/internal/qwen"
 	"qwen2api/internal/storage"
 )
 
@@ -590,6 +591,7 @@ func (h *Handler) HandleGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"email":          item.Email,
 			"password":       password,
 			"token":          token,
+			"hasCookie":      strings.TrimSpace(item.Cookie) != "",
 			"expires":        item.Expires,
 			"expiresAt":      expiresAt,
 			"status":         runtime.Status,
@@ -652,12 +654,13 @@ func (h *Handler) HandleSetAccount(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Cookie   string `json:"cookie"`
 	}
 	if err := decodeJSON(r, &payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求体格式错误"})
 		return
 	}
-	if err := h.accounts.AddAccount(r.Context(), payload.Email, payload.Password); err != nil {
+	if err := h.accounts.AddAccount(r.Context(), payload.Email, payload.Password, payload.Cookie); err != nil {
 		status := http.StatusBadRequest
 		if strings.Contains(err.Error(), "已存在") {
 			status = http.StatusConflict
@@ -739,6 +742,62 @@ func (h *Handler) HandleForceRefreshAllAccounts(w http.ResponseWriter, r *http.R
 		"refreshedCount": refreshed,
 		"totalAccounts":  len(h.accounts.ListAccounts()),
 	})
+}
+
+func (h *Handler) HandleBrowserSessionSnapshot(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": h.accounts.BrowserSessionSnapshot(),
+	})
+}
+
+func (h *Handler) HandleCaptureGuestBrowserSession(w http.ResponseWriter, r *http.Request) {
+	session, err := h.accounts.CaptureGuestBrowserSession(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "游客浏览器会话采集成功",
+		"data":    summarizeBrowserSessionResponse(session),
+	})
+}
+
+func (h *Handler) HandleCaptureBrowserSession(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Cookie string `json:"cookie"`
+	}
+	if err := decodeJSON(r, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "请求体格式错误"})
+		return
+	}
+	session, err := h.accounts.CaptureBrowserSessionWithCookie(r.Context(), payload.Cookie)
+	if err != nil {
+		status := http.StatusBadRequest
+		if !strings.Contains(err.Error(), "不能为空") {
+			status = http.StatusBadGateway
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "浏览器会话采集成功",
+		"data":    summarizeBrowserSessionResponse(session),
+	})
+}
+
+func summarizeBrowserSessionResponse(session *qwen.BrowserSession) map[string]any {
+	if session == nil {
+		return map[string]any{}
+	}
+	return map[string]any{
+		"capturedAt":  session.CapturedAt.UTC().Format(time.RFC3339),
+		"guest":       session.Guest,
+		"sourceUrl":   session.SourceURL,
+		"userAgent":   session.UserAgent,
+		"cookie":      session.Cookie,
+		"cookieNames": append([]string(nil), session.CookieNames...),
+		"headers":     session.Headers,
+	}
 }
 
 type batchTask struct {
@@ -843,19 +902,33 @@ func (h *Handler) HandleSetAccounts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		lines = append(lines, line)
-		email, password, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(email) == "" || strings.TrimSpace(password) == "" {
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) < 2 {
 			invalid++
 			continue
 		}
-		parsed = append(parsed, storage.Account{Email: strings.TrimSpace(email), Password: strings.TrimSpace(password)})
+		email := strings.TrimSpace(parts[0])
+		password := strings.TrimSpace(parts[1])
+		cookie := ""
+		if len(parts) == 3 {
+			cookie = strings.TrimSpace(parts[2])
+		}
+		if email == "" || password == "" {
+			invalid++
+			continue
+		}
+		parsed = append(parsed, storage.Account{
+			Email:    email,
+			Password: password,
+			Cookie:   cookie,
+		})
 	}
 	if len(lines) == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "账号列表不能为空"})
 		return
 	}
 	if len(parsed) == 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "没有符合格式的账号，请使用 email:password"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "没有符合格式的账号，请使用 email:password 或 email:password:cookie"})
 		return
 	}
 
@@ -916,7 +989,7 @@ func (h *Handler) HandleSetAccounts(w http.ResponseWriter, r *http.Request) {
 					task.update(func() {
 						task.ActiveEmails = append(task.ActiveEmails, accountItem.Email)
 					})
-					err := h.accounts.AddAccount(context.Background(), accountItem.Email, accountItem.Password)
+					err := h.accounts.AddAccount(context.Background(), accountItem.Email, accountItem.Password, accountItem.Cookie)
 					task.update(func() {
 						task.Processed++
 						task.Completed++
@@ -1032,7 +1105,7 @@ func (h *Handler) HandleDashboardStream(w http.ResponseWriter, r *http.Request) 
 						"admin":   boolToInt(keys.AdminKey != ""),
 						"regular": len(keys.RegularKeys),
 					},
-					"analytics": h.metrics.Snapshot(),
+					"analytics":   h.metrics.Snapshot(),
 					"generatedAt": time.Now().UTC().Format(time.RFC3339),
 				},
 			})

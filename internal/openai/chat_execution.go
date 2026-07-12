@@ -54,8 +54,9 @@ func (h *Handler) executeChatRequest(ctx context.Context, payload executedChatRe
 	if prepared.ContextHash != "" {
 		if mapped, ok := h.sessions.Get(prepared.ContextHash); ok && mapped.Model == prepared.Model && mapped.ChatType == prepared.ChatType {
 			if session, err := h.accounts.GetAccountSessionByEmail(mapped.AccountEmail); err == nil {
+				sessionCtx := bindAccountContext(ctx, session)
 				h.logger.DebugModule("OPENAI", "reuse mapped chat model=%s hash=%s account=%s chat_id=%s", prepared.Model, prepared.ContextHash, mapped.AccountEmail, mapped.ChatID)
-				executed, status, err := h.sendChatWithSession(ctx, prepared, session, mapped.ChatID, true)
+				executed, status, err := h.sendChatWithSession(sessionCtx, prepared, session, mapped.ChatID, true)
 				if err == nil {
 					h.sessions.Save(prepared.ContextHash, session.Email, mapped.ChatID, prepared.Model, prepared.ChatType)
 					h.recordChatUsage(session.Email, mapped.ChatID)
@@ -66,14 +67,14 @@ func (h *Handler) executeChatRequest(ctx context.Context, payload executedChatRe
 						h.sessions.Delete(prepared.ContextHash)
 						h.logger.WarnModule("OPENAI", "invalidate mapped chat model=%s hash=%s account=%s chat_id=%s err=%v", prepared.Model, prepared.ContextHash, session.Email, mapped.ChatID, upstreamErr)
 					} else if upstreamErr.Retryable {
-						h.accounts.RecordFailure(session.Email)
+						h.accounts.RecordFailureAndRefresh(sessionCtx, session.Email)
 						attempted[session.Email] = struct{}{}
 						h.logger.WarnModule("OPENAI", "mapped chat retryable error model=%s hash=%s account=%s chat_id=%s status=%d err=%v", prepared.Model, prepared.ContextHash, session.Email, mapped.ChatID, upstreamErr.StatusCode, upstreamErr)
 					} else {
 						return nil, normalizeUpstreamStatus(upstreamErr.StatusCode), upstreamErr
 					}
 				} else {
-					h.accounts.RecordFailure(session.Email)
+					h.accounts.RecordFailureAndRefresh(sessionCtx, session.Email)
 					attempted[session.Email] = struct{}{}
 				}
 			}
@@ -89,7 +90,8 @@ func (h *Handler) executeChatRequest(ctx context.Context, payload executedChatRe
 		}
 		attempted[session.Email] = struct{}{}
 
-		executed, status, err := h.sendChatWithSession(ctx, prepared, session, "", false)
+		sessionCtx := bindAccountContext(ctx, session)
+		executed, status, err := h.sendChatWithSession(sessionCtx, prepared, session, "", false)
 		if err == nil {
 			if prepared.ContextHash != "" {
 				if chatID := chatIDFromStream(executed.Stream); chatID != "" {
@@ -103,13 +105,15 @@ func (h *Handler) executeChatRequest(ctx context.Context, payload executedChatRe
 		lastErr = err
 		lastStatus = status
 		if upstreamErr, ok := err.(*qwen.UpstreamError); ok {
-			h.accounts.RecordFailure(session.Email)
+			h.accounts.RecordFailureAndRefresh(sessionCtx, session.Email)
 			if shouldInvalidateConversationMapping(upstreamErr) && prepared.ContextHash != "" {
 				h.sessions.Delete(prepared.ContextHash)
 			}
 			if upstreamErr.Retryable {
 				continue
 			}
+		} else {
+			h.accounts.RecordFailureAndRefresh(sessionCtx, session.Email)
 		}
 		return nil, status, err
 	}
@@ -201,6 +205,7 @@ func selectIncrementalTailMessages(messages []map[string]any) []map[string]any {
 }
 
 func (h *Handler) sendChatWithSession(ctx context.Context, prepared preparedChatRequest, session storage.Account, existingChatID string, incremental bool) (*executedChat, int, error) {
+	ctx = bindAccountContext(ctx, session)
 	return h.sendChatWithSessionAttempt(ctx, prepared, session, existingChatID, incremental, true)
 }
 

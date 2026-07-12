@@ -20,6 +20,7 @@ type Account struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
 	Token    string `json:"token"`
+	Cookie   string `json:"cookie,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Expires  int64  `json:"expires"`
 }
@@ -30,11 +31,30 @@ func (a Account) IsGuest() bool {
 	return strings.EqualFold(strings.TrimSpace(a.Source), AccountSourceGuest)
 }
 
+func (a Account) BrowserSessionKey() string {
+	if a.IsGuest() {
+		return AccountSourceGuest
+	}
+	return strings.ToLower(strings.TrimSpace(a.Email))
+}
+
 type FileData struct {
-	DefaultHeaders       any                   `json:"defaultHeaders"`
-	DefaultCookie        any                   `json:"defaultCookie"`
-	Accounts             []Account             `json:"accounts"`
-	ConversationSessions []ConversationSession `json:"conversationSessions,omitempty"`
+	DefaultHeaders       any                       `json:"defaultHeaders"`
+	DefaultCookie        any                       `json:"defaultCookie"`
+	BrowserSessions      map[string]BrowserSession `json:"browserSessions,omitempty"`
+	Accounts             []Account                 `json:"accounts"`
+	ConversationSessions []ConversationSession     `json:"conversationSessions,omitempty"`
+}
+
+type BrowserSession struct {
+	Headers     map[string][]string `json:"headers,omitempty"`
+	Cookie      string              `json:"cookie,omitempty"`
+	CapturedAt  time.Time           `json:"capturedAt,omitempty"`
+	Guest       bool                `json:"guest,omitempty"`
+	SourceURL   string              `json:"sourceUrl,omitempty"`
+	UserAgent   string              `json:"userAgent,omitempty"`
+	HasCookie   bool                `json:"hasCookie,omitempty"`
+	CookieNames []string            `json:"cookieNames,omitempty"`
 }
 
 type AccountStore interface {
@@ -42,6 +62,8 @@ type AccountStore interface {
 	SaveAccount(account Account) error
 	DeleteAccount(email string) error
 	SaveAllAccounts(accounts []Account) error
+	LoadBrowserSessions() (map[string]BrowserSession, error)
+	SaveBrowserSessions(sessions map[string]BrowserSession) error
 }
 
 type fileStore struct {
@@ -94,10 +116,11 @@ func newEnvStoreFromCurrentEnv() *envStore {
 		if item == "" {
 			continue
 		}
-		email, password, ok := strings.Cut(item, ":")
+		email, rest, ok := strings.Cut(item, ":")
 		if !ok {
 			continue
 		}
+		password, cookie, _ := strings.Cut(rest, ":")
 		email = strings.TrimSpace(email)
 		password = strings.TrimSpace(password)
 		if email == "" || password == "" {
@@ -106,6 +129,7 @@ func newEnvStoreFromCurrentEnv() *envStore {
 		accounts = append(accounts, Account{
 			Email:    email,
 			Password: password,
+			Cookie:   strings.TrimSpace(cookie),
 		})
 	}
 	return &envStore{accounts: accounts}
@@ -125,6 +149,14 @@ func (s *envStore) DeleteAccount(string) error {
 
 func (s *envStore) SaveAllAccounts([]Account) error {
 	return errors.New("环境变量模式不支持批量保存账户数据")
+}
+
+func (s *envStore) LoadBrowserSessions() (map[string]BrowserSession, error) {
+	return map[string]BrowserSession{}, nil
+}
+
+func (s *envStore) SaveBrowserSessions(map[string]BrowserSession) error {
+	return errors.New("环境变量模式不支持保存浏览器会话")
 }
 
 func (s *fileStore) LoadAccounts() ([]Account, error) {
@@ -187,6 +219,29 @@ func (s *fileStore) SaveAllAccounts(accounts []Account) error {
 		return err
 	}
 	data.Accounts = append([]Account(nil), accounts...)
+	return s.write(data)
+}
+
+func (s *fileStore) LoadBrowserSessions() (map[string]BrowserSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	return cloneBrowserSessions(data.BrowserSessions), nil
+}
+
+func (s *fileStore) SaveBrowserSessions(sessions map[string]BrowserSession) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := s.read()
+	if err != nil {
+		return err
+	}
+	data.BrowserSessions = cloneBrowserSessions(sessions)
 	return s.write(data)
 }
 
@@ -266,6 +321,7 @@ func (s *redisStore) LoadAccounts() ([]Account, error) {
 			Email:    email,
 			Password: values["password"],
 			Token:    values["token"],
+			Cookie:   values["cookie"],
 		}
 		if values["expires"] != "" {
 			if parsed, parseErr := time.Parse(time.RFC3339Nano, values["expires"]); parseErr == nil {
@@ -289,6 +345,7 @@ func (s *redisStore) SaveAccount(account Account) error {
 	values := map[string]any{
 		"password":     account.Password,
 		"token":        account.Token,
+		"cookie":       account.Cookie,
 		"expires_unix": account.Expires,
 	}
 	if account.Expires > 0 {
@@ -322,6 +379,7 @@ func (s *redisStore) SaveAllAccounts(accounts []Account) error {
 		values := map[string]any{
 			"password":     account.Password,
 			"token":        account.Token,
+			"cookie":       account.Cookie,
 			"expires_unix": account.Expires,
 		}
 		if account.Expires > 0 {
@@ -330,6 +388,65 @@ func (s *redisStore) SaveAllAccounts(accounts []Account) error {
 			values["expires"] = ""
 		}
 		pipe.HSet(ctx, "user:"+account.Email, values)
+	}
+	_, err = pipe.Exec(ctx)
+	return err
+}
+
+func (s *redisStore) LoadBrowserSessions() (map[string]BrowserSession, error) {
+	ctx, cancel := redisContext()
+	defer cancel()
+
+	keys, err := s.client.Keys(ctx, "browser_session:*").Result()
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return map[string]BrowserSession{}, nil
+	}
+	values, err := s.client.MGet(ctx, keys...).Result()
+	if err != nil {
+		return nil, err
+	}
+
+	sessions := make(map[string]BrowserSession)
+	for i, raw := range values {
+		text, ok := raw.(string)
+		if !ok || strings.TrimSpace(text) == "" {
+			continue
+		}
+		var session BrowserSession
+		if err := json.Unmarshal([]byte(text), &session); err != nil {
+			return nil, err
+		}
+		kind := strings.TrimPrefix(keys[i], "browser_session:")
+		if strings.TrimSpace(kind) == "" {
+			continue
+		}
+		sessions[kind] = session
+	}
+	return sessions, nil
+}
+
+func (s *redisStore) SaveBrowserSessions(sessions map[string]BrowserSession) error {
+	ctx, cancel := redisContext()
+	defer cancel()
+
+	pipe := s.client.TxPipeline()
+	existingKeys, err := s.client.Keys(ctx, "browser_session:*").Result()
+	if err != nil {
+		return err
+	}
+	for _, key := range existingKeys {
+		pipe.Del(ctx, key)
+	}
+	for kind, session := range sessions {
+		key := "browser_session:" + kind
+		raw, err := json.Marshal(session)
+		if err != nil {
+			return err
+		}
+		pipe.Set(ctx, key, raw, 0)
 	}
 	_, err = pipe.Exec(ctx)
 	return err
@@ -350,4 +467,23 @@ func (s *redisStore) scanUserKeys(ctx context.Context) ([]string, error) {
 		}
 	}
 	return keys, nil
+}
+
+func cloneBrowserSessions(sessions map[string]BrowserSession) map[string]BrowserSession {
+	if len(sessions) == 0 {
+		return map[string]BrowserSession{}
+	}
+	cloned := make(map[string]BrowserSession, len(sessions))
+	for kind, session := range sessions {
+		copy := session
+		if len(session.Headers) > 0 {
+			copy.Headers = make(map[string][]string, len(session.Headers))
+			for key, values := range session.Headers {
+				copy.Headers[key] = append([]string(nil), values...)
+			}
+		}
+		copy.CookieNames = append([]string(nil), session.CookieNames...)
+		cloned[kind] = copy
+	}
+	return cloned
 }
