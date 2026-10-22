@@ -11,6 +11,7 @@ import { Plus, Trash2, RefreshCw, Search, Filter, ChevronLeft, ChevronRight, Use
 type AccountsActions = {
   setNewAccountEmail: (value: string) => void;
   setNewAccountPassword: (value: string) => void;
+  setNewAccountCookie: (value: string) => void;
   setBatchAccountsText: (value: string) => void;
   createAccount: () => Promise<void>;
   createBatchTask: () => Promise<void>;
@@ -28,6 +29,7 @@ export function AccountsTab({
   draftKeyword,
   newAccountEmail,
   newAccountPassword,
+  newAccountCookie,
   batchAccountsText,
   loadingAccounts,
   actions,
@@ -38,6 +40,7 @@ export function AccountsTab({
   draftKeyword: string;
   newAccountEmail: string;
   newAccountPassword: string;
+  newAccountCookie: string;
   batchAccountsText: string;
   loadingAccounts: boolean;
   actions: AccountsActions;
@@ -52,21 +55,28 @@ export function AccountsTab({
           <div className="admin-card-header">
             <div>
               <h3>{t("accounts.addAccount")}</h3>
-              <p>Quick single account creation</p>
+              <p>Quick account creation (via Password or Cookie)</p>
             </div>
           </div>
           <div className="admin-card-body flex flex-col gap-4">
             <Input
-              placeholder="email@example.com"
-              type="email"
+              placeholder="Email (e.g. user@example.com)"
+              type="text"
               value={newAccountEmail}
               onChange={(e) => actions.setNewAccountEmail(e.target.value)}
             />
             <Input
-              placeholder="Password"
+              placeholder="Password (optional if Cookie provided)"
               type="password"
               value={newAccountPassword}
               onChange={(e) => actions.setNewAccountPassword(e.target.value)}
+            />
+            <textarea
+              className="admin-textarea"
+              rows={3}
+              placeholder="Cookie (optional, e.g. cnaui=...; refresh_token=...)"
+              value={newAccountCookie}
+              onChange={(e) => actions.setNewAccountCookie(e.target.value)}
             />
             <button className="admin-btn admin-btn-primary self-start" onClick={() => void actions.createAccount()}>
               <Plus size={16} />
@@ -79,7 +89,7 @@ export function AccountsTab({
           <div className="admin-card-header">
             <div>
               <h3>{t("accounts.batchImport")}</h3>
-              <p>One email:password per line, async task with polling</p>
+              <p>Format: email:password, email:password:cookie, or email::cookie (one per line)</p>
             </div>
           </div>
           <div className="admin-card-body flex flex-col gap-4">

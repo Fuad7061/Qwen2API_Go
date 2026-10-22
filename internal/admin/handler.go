@@ -913,7 +913,7 @@ func (h *Handler) HandleSetAccounts(w http.ResponseWriter, r *http.Request) {
 		if len(parts) == 3 {
 			cookie = strings.TrimSpace(parts[2])
 		}
-		if email == "" || password == "" {
+		if email == "" || (password == "" && cookie == "") {
 			invalid++
 			continue
 		}

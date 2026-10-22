@@ -354,10 +354,14 @@ func (s *Service) ListAccounts() []storage.Account {
 }
 
 func (s *Service) AddAccount(ctx context.Context, email, password string, cookieHeader ...string) error {
-	if strings.TrimSpace(email) == "" || strings.TrimSpace(password) == "" {
-		return errors.New("邮箱和密码不能为空")
-	}
 	cookie := optionalCookie(cookieHeader)
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return errors.New("邮箱不能为空")
+	}
+	if strings.TrimSpace(password) == "" && strings.TrimSpace(cookie) == "" {
+		return errors.New("密码和 Cookie 不能同时为空")
+	}
 
 	s.mu.RLock()
 	for _, account := range s.accounts {
@@ -367,6 +371,25 @@ func (s *Service) AddAccount(ctx context.Context, email, password string, cookie
 		}
 	}
 	s.mu.RUnlock()
+
+	if strings.TrimSpace(cookie) != "" {
+		session, err := s.client.CaptureBrowserSessionForAccount(ctx, strings.ToLower(email), cookie)
+		if err != nil {
+			return fmt.Errorf("浏览器会话采集失败: %w", err)
+		}
+		if session == nil || strings.TrimSpace(session.Token) == "" {
+			return errors.New("无法从 Cookie 中提取有效的 Access Token")
+		}
+		exp, err := decodeExpiry(session.Token)
+		if err != nil {
+			return fmt.Errorf("Token 解析失败: %w", err)
+		}
+		if err := s.AddAccountWithToken(email, password, session.Token, exp, cookie); err != nil {
+			return err
+		}
+		s.saveBrowserSessions()
+		return nil
+	}
 
 	token, err := s.tokenMgr.Login(ctx, email, password)
 	if err != nil {
@@ -383,8 +406,8 @@ func (s *Service) AddAccount(ctx context.Context, email, password string, cookie
 		Email:    email,
 		Password: password,
 		Token:    token,
-		Cookie:   cookie,
 		Expires:  exp,
+		Cookie:   cookie,
 	})
 	return nil
 }

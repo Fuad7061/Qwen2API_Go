@@ -66,6 +66,7 @@ export function useAdminConsole(initialTab?: TabKey) {
   const deferredModelKeyword = useDeferredValue(modelKeyword);
   const [newAccountEmail, setNewAccountEmail] = useState("");
   const [newAccountPassword, setNewAccountPassword] = useState("");
+  const [newAccountCookie, setNewAccountCookie] = useState("");
   const [batchAccountsText, setBatchAccountsText] = useState("");
   const [addKeyValue, setAddKeyValue] = useState("");
   const [thresholdHours, setThresholdHours] = useState("24");
@@ -339,6 +340,7 @@ export function useAdminConsole(initialTab?: TabKey) {
       modelKeyword,
       newAccountEmail,
       newAccountPassword,
+      newAccountCookie,
       batchAccountsText,
       addKeyValue,
       thresholdHours,
@@ -373,6 +375,7 @@ export function useAdminConsole(initialTab?: TabKey) {
       setModelKeyword,
       setNewAccountEmail,
       setNewAccountPassword,
+      setNewAccountCookie,
       setBatchAccountsText,
       setAddKeyValue,
       setThresholdHours,
@@ -391,9 +394,14 @@ export function useAdminConsole(initialTab?: TabKey) {
       toggleTheme: () => setThemeMode((current) => (current === "light" ? "dark" : "light")),
       changeLanguage,
       createAccount: async () => {
-        await submitAction("/api/setAccount", { email: newAccountEmail, password: newAccountPassword });
+        await submitAction("/api/setAccount", {
+          email: newAccountEmail,
+          password: newAccountPassword,
+          cookie: newAccountCookie,
+        });
         setNewAccountEmail("");
         setNewAccountPassword("");
+        setNewAccountCookie("");
         setToast({ type: "success", message: "账号创建成功。" });
         await loadAccounts();
         await loadShell();
