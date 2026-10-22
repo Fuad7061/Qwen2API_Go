@@ -27,8 +27,8 @@ import (
 )
 
 const (
-	qwenWebVersion = "0.2.68"
-	qwenBxVersion  = "2.5.36"
+	qwenWebVersion = "0.3.22"
+	qwenBxVersion  = "2.5.37"
 )
 
 type Client struct {
@@ -153,13 +153,12 @@ func (c *Client) newRequestWithOptions(ctx context.Context, method, path string,
 	req.Header.Set("X-Request-Id", newRequestID())
 	c.applyBrowserSessionHeaders(req, browserSession, options)
 
+	req.Header.Set("Version", qwenWebVersion)
+	if req.Header.Get("Bx-V") == "" {
+		req.Header.Set("bx-v", qwenBxVersion)
+	}
 	if rawToken == "" {
-		req.Header.Set("Version", qwenWebVersion)
-		req.Header.Set("bx-v", qwenBxVersion)
 		req.Header.Set("X-Accel-Buffering", "no")
-	} else {
-		req.Header.Set("Version", qwenWebVersion)
-		req.Header.Set("bx-v", qwenBxVersion)
 	}
 	if options.IncludeAuth && rawToken != "" {
 		req.Header.Set("Authorization", "Bearer "+rawToken)
@@ -186,20 +185,22 @@ func (c *Client) buildCookieHeader(ctx context.Context, token string, options co
 	cookies := make(map[string]string)
 	rawToken := strings.TrimSpace(token)
 
-	if options.includeGuestBootstrap {
-		guestCookie, err := c.EnsureGuestCookieHeader(ctx)
-		if err != nil {
-			return "", err
+	if rawToken == "" || strings.TrimSpace(options.browserCookieHeader) == "" {
+		if options.includeGuestBootstrap {
+			guestCookie, err := c.EnsureGuestCookieHeader(ctx)
+			if err != nil {
+				return "", err
+			}
+			mergeCookieHeader(cookies, guestCookie)
 		}
-		mergeCookieHeader(cookies, guestCookie)
 	}
 	mergeCookieHeader(cookies, options.browserCookieHeader)
 	fillGuestCookieDefaults(cookies)
 	ssxmodITNA, ssxmodITNA2 := c.ssxmod.Get()
-	if strings.TrimSpace(ssxmodITNA) != "" {
+	if strings.TrimSpace(ssxmodITNA) != "" && cookies["ssxmod_itna"] == "" {
 		cookies["ssxmod_itna"] = ssxmodITNA
 	}
-	if strings.TrimSpace(ssxmodITNA2) != "" {
+	if strings.TrimSpace(ssxmodITNA2) != "" && cookies["ssxmod_itna2"] == "" {
 		cookies["ssxmod_itna2"] = ssxmodITNA2
 	}
 	if rawToken != "" {
@@ -225,6 +226,7 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 func (c *Client) doOnce(req *http.Request) (*http.Response, error) {
 	start := time.Now()
 	bodyPreview := requestBodyPreview(req)
+	c.logger.DebugModule("UPSTREAM", "headers has_bx_ua=%v bx_v=%s referer=%s cookie_len=%d", req.Header.Get("Bx-Ua") != "", req.Header.Get("Bx-V"), req.Header.Get("Referer"), len(req.Header.Get("Cookie")))
 	if bodyPreview != "" {
 		c.logger.DebugModule("UPSTREAM", "upstream request method=%s url=%s accept=%s content_type=%s auth=%t body=%s", req.Method, req.URL.String(), req.Header.Get("Accept"), req.Header.Get("Content-Type"), strings.TrimSpace(req.Header.Get("Authorization")) != "", bodyPreview)
 	} else {
@@ -482,6 +484,9 @@ func (c *Client) listModels(ctx context.Context, token string, force bool) ([]Mo
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, err
+	}
+	if upstreamErr := normalizeUpstreamError(payload); upstreamErr != nil {
+		return nil, upstreamErr
 	}
 	models := extractModelsFromPayload(payload)
 

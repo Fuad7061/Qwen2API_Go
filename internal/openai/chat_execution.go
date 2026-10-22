@@ -218,6 +218,15 @@ func (h *Handler) sendChatWithSessionAttempt(ctx context.Context, prepared prepa
 			if allowGuestRefresh && session.IsGuest() && h.refreshGuestSession(ctx, session, err) == nil {
 				return h.sendChatWithSessionAttempt(ctx, prepared, session, "", false, false)
 			}
+			if allowGuestRefresh && session.Cookie != "" && isTokenExpiredError(err) {
+				h.logger.WarnModule("OPENAI", "新建对话时账号 Token 已过期，自动通过浏览器刷新并重试 email=%s", session.Email)
+				if refreshErr := h.accounts.RefreshAccount(ctx, session.Email); refreshErr == nil {
+					if refreshed, getErr := h.accounts.GetAccountSessionByEmail(session.Email); getErr == nil {
+						refreshedCtx := bindAccountContext(ctx, refreshed)
+						return h.sendChatWithSessionAttempt(refreshedCtx, prepared, refreshed, "", false, false)
+					}
+				}
+			}
 			if upstreamErr, ok := err.(*qwen.UpstreamError); ok {
 				return nil, normalizeUpstreamStatus(upstreamErr.StatusCode), err
 			}
@@ -242,6 +251,15 @@ func (h *Handler) sendChatWithSessionAttempt(ctx context.Context, prepared prepa
 		if allowGuestRefresh && session.IsGuest() && h.refreshGuestSession(ctx, session, err) == nil {
 			return h.sendChatWithSessionAttempt(ctx, prepared, session, "", false, false)
 		}
+		if allowGuestRefresh && session.Cookie != "" && isTokenExpiredError(err) {
+			h.logger.WarnModule("OPENAI", "对话请求时账号 Token 已过期，自动通过浏览器刷新并重试 email=%s", session.Email)
+			if refreshErr := h.accounts.RefreshAccount(ctx, session.Email); refreshErr == nil {
+				if refreshed, getErr := h.accounts.GetAccountSessionByEmail(session.Email); getErr == nil {
+					refreshedCtx := bindAccountContext(ctx, refreshed)
+					return h.sendChatWithSessionAttempt(refreshedCtx, prepared, refreshed, "", false, false)
+				}
+			}
+		}
 		if upstreamErr, ok := err.(*qwen.UpstreamError); ok {
 			return nil, normalizeUpstreamStatus(upstreamErr.StatusCode), err
 		}
@@ -252,11 +270,29 @@ func (h *Handler) sendChatWithSessionAttempt(ctx context.Context, prepared prepa
 		if allowGuestRefresh && session.IsGuest() && h.refreshGuestSession(ctx, session, err) == nil {
 			return h.sendChatWithSessionAttempt(ctx, prepared, session, "", false, false)
 		}
+		if allowGuestRefresh && session.Cookie != "" && isTokenExpiredError(err) {
+			h.logger.WarnModule("OPENAI", "解析流时账号 Token 已过期，自动通过浏览器刷新并重试 email=%s", session.Email)
+			if refreshErr := h.accounts.RefreshAccount(ctx, session.Email); refreshErr == nil {
+				if refreshed, getErr := h.accounts.GetAccountSessionByEmail(session.Email); getErr == nil {
+					refreshedCtx := bindAccountContext(ctx, refreshed)
+					return h.sendChatWithSessionAttempt(refreshedCtx, prepared, refreshed, "", false, false)
+				}
+			}
+		}
 		return nil, http.StatusBadGateway, err
 	}
 	if inspected.UpstreamError != nil {
 		if allowGuestRefresh && session.IsGuest() && h.refreshGuestSession(ctx, session, inspected.UpstreamError) == nil {
 			return h.sendChatWithSessionAttempt(ctx, prepared, session, "", false, false)
+		}
+		if allowGuestRefresh && session.Cookie != "" && isTokenExpiredError(inspected.UpstreamError) {
+			h.logger.WarnModule("OPENAI", "上游报错提示 Token 已过期，自动通过浏览器刷新并重试 email=%s", session.Email)
+			if refreshErr := h.accounts.RefreshAccount(ctx, session.Email); refreshErr == nil {
+				if refreshed, getErr := h.accounts.GetAccountSessionByEmail(session.Email); getErr == nil {
+					refreshedCtx := bindAccountContext(ctx, refreshed)
+					return h.sendChatWithSessionAttempt(refreshedCtx, prepared, refreshed, "", false, false)
+				}
+			}
 		}
 		return nil, normalizeUpstreamStatus(inspected.UpstreamError.StatusCode), inspected.UpstreamError
 	}
@@ -295,6 +331,19 @@ func shouldInvalidateConversationMapping(err *qwen.UpstreamError) bool {
 		strings.Contains(haystack, "not found") ||
 		strings.Contains(haystack, "permission") ||
 		strings.Contains(haystack, "unauthorized")
+}
+
+func isTokenExpiredError(err error) bool {
+	if err == nil {
+		return false
+	}
+	haystack := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(haystack, "token has expired") ||
+		strings.Contains(haystack, "token expired") ||
+		strings.Contains(haystack, "unauthorized") ||
+		strings.Contains(haystack, "please log in again") ||
+		strings.Contains(haystack, "未登录") ||
+		strings.Contains(haystack, "登录已过期")
 }
 
 type streamWithChatID struct {

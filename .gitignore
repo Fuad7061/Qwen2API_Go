@@ -1,12 +1,29 @@
+# Root Binaries
+/qwen2api
+/qwen2api.exe
 *.exe
-dist
-data
-.env
+*.dll
+*.so
+*.dylib
 
-# 调试
-.play*
+# Build outputs
+dist
+public/.next
+public/out
+public/node_modules
+
+# Secrets & local persistence
+data/
+.env
+.env.*
+!.env.example
+data.json
 /data.json
-/docs
+
+# Logs & temp debug
 *.log
-test
+logs/
+.play*
+test/
 *.har
+.DS_Store

@@ -450,18 +450,21 @@ func buildChatRequestBody(session storage.Account, model, chatID, chatType strin
 	if chatType == "t2v" {
 		return buildVideoRequestBody(session, model, chatID, chatType, messages)
 	}
+	chatMode := "normal"
 	if session.IsGuest() {
-		return buildGuestChatRequestBody(model, chatID, chatType, messages)
+		chatMode = "guest"
 	}
 	return map[string]any{
 		"stream":             true,
 		"version":            "2.1",
 		"incremental_output": true,
+		"chatId":             chatID,
+		"parentId":           "",
 		"chat_id":            chatID,
-		"chat_mode":          "normal",
+		"chat_mode":          chatMode,
 		"model":              model,
 		"parent_id":          nil,
-		"messages":           decorateChatMessages(model, chatType, messages, false),
+		"messages":           decorateChatMessages(model, chatType, messages, session.IsGuest()),
 		"timestamp":          time.Now().Unix(),
 	}
 }
@@ -475,6 +478,8 @@ func buildVideoRequestBody(session storage.Account, model, chatID, chatType stri
 		"stream":             false,
 		"version":            "2.1",
 		"incremental_output": true,
+		"chatId":             chatID,
+		"parentId":           "",
 		"chat_id":            chatID,
 		"chat_mode":          chatMode,
 		"model":              model,
@@ -489,6 +494,8 @@ func buildGuestChatRequestBody(model, chatID, chatType string, messages []map[st
 		"stream":             true,
 		"version":            "2.1",
 		"incremental_output": true,
+		"chatId":             chatID,
+		"parentId":           "",
 		"chat_id":            chatID,
 		"chat_mode":          "guest",
 		"model":              model,
@@ -541,11 +548,11 @@ func decorateAssetMessages(model, chatType string, messages []map[string]any) []
 }
 
 func applyQwenMessageEnvelope(item map[string]any, model, chatType string, timestamp int64) {
+	item["id"] = nil
+	item["model"] = ""
+	item["parentId"] = nil
 	if _, ok := item["fid"]; !ok || !looksLikeUUID(fmt.Sprint(item["fid"])) {
 		item["fid"] = newUUID()
-	}
-	if _, ok := item["parentId"]; !ok {
-		item["parentId"] = nil
 	}
 	if !hasChildrenIDs(item["childrenIds"]) {
 		item["childrenIds"] = []string{newUUID()}
@@ -564,9 +571,7 @@ func applyQwenMessageEnvelope(item map[string]any, model, chatType string, times
 	}
 	item["chat_type"] = chatType
 	item["sub_chat_type"] = chatType
-	if _, ok := item["parent_id"]; !ok {
-		item["parent_id"] = nil
-	}
+	item["parent_id"] = nil
 }
 
 func hasChildrenIDs(value any) bool {
@@ -609,12 +614,29 @@ func normalizeChatFeatureConfig(featureConfig map[string]any, autoThinking bool)
 	}
 	featureConfig["output_schema"] = "phase"
 	featureConfig["research_mode"] = "normal"
-	featureConfig["thinking_format"] = "summary"
 	featureConfig["auto_search"] = true
-	if autoThinking {
+
+	currentMode, _ := featureConfig["thinking_mode"].(string)
+	if autoThinking || strings.EqualFold(currentMode, "Auto") {
 		featureConfig["thinking_enabled"] = true
 		featureConfig["auto_thinking"] = true
 		featureConfig["thinking_mode"] = "Auto"
+		featureConfig["thinking_format"] = "summary"
+	} else {
+		enabled, hasEnabled := featureConfig["thinking_enabled"].(bool)
+		if (hasEnabled && !enabled) || strings.EqualFold(currentMode, "Fast") {
+			featureConfig["thinking_enabled"] = false
+			featureConfig["auto_thinking"] = false
+			featureConfig["thinking_mode"] = "Fast"
+			delete(featureConfig, "thinking_format")
+		} else {
+			featureConfig["thinking_enabled"] = true
+			featureConfig["auto_thinking"] = false
+			if _, ok := featureConfig["thinking_mode"]; !ok || strings.TrimSpace(currentMode) == "" {
+				featureConfig["thinking_mode"] = "Thinking"
+			}
+			featureConfig["thinking_format"] = "summary"
+		}
 	}
 	return featureConfig
 }
@@ -1938,4 +1960,21 @@ func (h *Handler) downloadAsBase64(ctx context.Context, assetURL string) (string
 		return "", err
 	}
 	return base64.StdEncoding.EncodeToString(body), nil
+}
+
+func (h *Handler) HandleRefresh(w http.ResponseWriter, r *http.Request) {
+	refreshed, err := h.accounts.RefreshAllAccounts(r.Context(), 0)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": map[string]any{
+				"message": err.Error(),
+				"type":    "server_error",
+			},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":   "Token refreshed successfully",
+		"refreshed": refreshed,
+	})
 }

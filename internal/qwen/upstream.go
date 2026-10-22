@@ -120,8 +120,15 @@ func InspectUpstreamStream(ctx context.Context, body io.ReadCloser) (*StreamInsp
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
+				allBytes := joinChunks(bufferedChunks)
+				if decoded := parseJSONPayload(strings.TrimSpace(string(allBytes))); decoded != nil {
+					if upstreamErr := normalizeUpstreamError(decoded); upstreamErr != nil {
+						_ = body.Close()
+						return &StreamInspectionResult{UpstreamError: upstreamErr}, nil
+					}
+				}
 				return &StreamInspectionResult{
-					Stream: io.NopCloser(bytes.NewReader(joinChunks(bufferedChunks))),
+					Stream: io.NopCloser(bytes.NewReader(allBytes)),
 				}, nil
 			}
 			_ = body.Close()

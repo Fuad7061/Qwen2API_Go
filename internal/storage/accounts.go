@@ -55,6 +55,7 @@ type BrowserSession struct {
 	UserAgent   string              `json:"userAgent,omitempty"`
 	HasCookie   bool                `json:"hasCookie,omitempty"`
 	CookieNames []string            `json:"cookieNames,omitempty"`
+	Token       string              `json:"token,omitempty"`
 }
 
 type AccountStore interface {

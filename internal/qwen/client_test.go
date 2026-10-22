@@ -155,8 +155,8 @@ func TestNewRequestUsesGuestCookieWithoutAuthorization(t *testing.T) {
 	if got := req.Header.Get("Version"); got != qwenWebVersion {
 		t.Fatalf("Version = %q, want %q", got, qwenWebVersion)
 	}
-	if got := req.Header.Get("bx-v"); got != "2.5.36" {
-		t.Fatalf("bx-v = %q, want %q", got, "2.5.36")
+	if got := req.Header.Get("bx-v"); got != qwenBxVersion {
+		t.Fatalf("bx-v = %q, want %q", got, qwenBxVersion)
 	}
 	if got := req.Header.Get("X-Accel-Buffering"); got != "no" {
 		t.Fatalf("X-Accel-Buffering = %q, want %q", got, "no")

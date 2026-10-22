@@ -97,6 +97,7 @@ func New(cfg config.Config, keyring *auth.Keyring, openAIHandler *openai.Handler
 	handle("/v1/videos", "video", ensureMethod(http.MethodPost, withAnyKey(openAIHandler.HandleVideos)))
 	handle("/v1/uploads", "upload", ensureMethod(http.MethodPost, withAnyKey(openAIHandler.HandleUploads)))
 	handle("/v1/files/upload", "upload", ensureMethod(http.MethodPost, withAnyKey(openAIHandler.HandleUploads)))
+	handle("/v1/refresh", "refresh", ensureMethods(withAnyKey(openAIHandler.HandleRefresh), http.MethodGet, http.MethodPost))
 
 	handle("/api/dashboard/overview", "admin", ensureMethod(http.MethodGet, withAdminKey(adminHandler.HandleOverview)))
 	handle("/api/models", "admin", ensureMethod(http.MethodGet, withAdminKey(adminHandler.HandleModels)))
@@ -160,6 +161,18 @@ func ensureMethod(method string, next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
+	}
+}
+
+func ensureMethods(next http.HandlerFunc, methods ...string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		for _, m := range methods {
+			if r.Method == m {
+				next(w, r)
+				return
+			}
+		}
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "Method Not Allowed"})
 	}
 }
 

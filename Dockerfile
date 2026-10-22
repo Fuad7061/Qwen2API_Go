@@ -28,7 +28,10 @@ FROM alpine:3.22
 
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata chromium
+
+ENV CHROME_PATH=/usr/bin/chromium-browser \
+    CHROME_BIN=/usr/bin/chromium-browser
 
 COPY --from=go-builder /out/qwen2api /app/qwen2api
 COPY --from=go-builder /src/public/out /app/public/out

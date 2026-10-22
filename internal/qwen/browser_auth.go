@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultBrowserAuthTimeout = 45 * time.Second
-	browserSessionTTL         = 30 * time.Minute
+	browserSessionTTL         = 24 * time.Hour
 )
 
 type browserAuthConfig struct {
@@ -36,6 +36,7 @@ type BrowserSession struct {
 	UserAgent   string      `json:"userAgent,omitempty"`
 	HasCookie   bool        `json:"hasCookie"`
 	CookieNames []string    `json:"cookieNames,omitempty"`
+	Token       string      `json:"token,omitempty"`
 }
 
 type browserSessionState struct {
@@ -201,10 +202,15 @@ func (c *Client) captureBrowserSession(ctx context.Context, cookieHeader string,
 	opts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", c.browserAuth.Headless),
 		chromedp.Flag("disable-gpu", true),
+		chromedp.Flag("no-sandbox", true),
+		chromedp.Flag("disable-setuid-sandbox", true),
 		chromedp.Flag("no-first-run", true),
 		chromedp.Flag("no-default-browser-check", true),
 		chromedp.Flag("disable-background-networking", true),
 		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-software-rasterizer", true),
+		chromedp.Flag("mute-audio", true),
 	)
 	if path := c.browserExecutablePath(); path != "" {
 		opts = append(opts, chromedp.ExecPath(path))
@@ -221,7 +227,7 @@ func (c *Client) captureBrowserSession(ctx context.Context, cookieHeader string,
 	var captureMu sync.Mutex
 	var capturedHeaders http.Header
 	var capturedSourceURL string
-	var capturedPreferred bool
+	var capturedScore int
 	chromedp.ListenTarget(browserCtx, func(ev any) {
 		event, ok := ev.(*network.EventRequestWillBeSent)
 		if !ok || event.Request == nil {
@@ -236,11 +242,24 @@ func (c *Client) captureBrowserSession(ctx context.Context, cookieHeader string,
 			return
 		}
 		preferred := strings.Contains(requestURL, "/api/v2/chats/new") || strings.Contains(requestURL, "/api/v2/chat/completions")
+		score := 0
+		if headers.Get("Bx-Ua") != "" {
+			score += 10
+		}
+		if umid := headers.Get("Bx-Umidtoken"); umid != "" && umid != "default_not_value" {
+			score += 20
+		}
+		if headers.Get("Bx-V") != "" {
+			score += 10
+		}
+		if preferred {
+			score += 5
+		}
 		captureMu.Lock()
-		if capturedHeaders == nil || preferred || !capturedPreferred {
+		if capturedHeaders == nil || score > capturedScore {
 			capturedHeaders = headers
 			capturedSourceURL = requestURL
-			capturedPreferred = preferred
+			capturedScore = score
 		}
 		captureMu.Unlock()
 		select {
@@ -252,17 +271,25 @@ func (c *Client) captureBrowserSession(ctx context.Context, cookieHeader string,
 
 	var cookie string
 	var names []string
+	var token string
 	if err := chromedp.Run(browserCtx,
 		network.Enable(),
 		c.injectBrowserCookies(cookieHeader),
-		chromedp.Navigate(c.baseURL+"/"),
-		chromedp.Sleep(2*time.Second),
-		chromedp.Evaluate(`fetch("/api/v2/configs/", { credentials: "include" }).catch(() => null)`, nil),
 		chromedp.Navigate(c.baseURL+"/c/new-chat"),
-		chromedp.Sleep(2*time.Second),
+		chromedp.Sleep(4*time.Second),
+		chromedp.Evaluate(`fetch("/api/v2/configs/", { credentials: "include" }).catch(() => null)`, nil),
 		chromedp.Evaluate(browserProbeScript(guest), nil),
 		chromedp.Sleep(2*time.Second),
-		chromedp.Sleep(2*time.Second),
+		chromedp.Evaluate(`(() => {
+			let t = localStorage.getItem("token");
+			if (!t) {
+				try {
+					let state = JSON.parse(localStorage.getItem("qwen_access_token_state") || "{}");
+					t = state.token || "";
+				} catch(e) {}
+			}
+			return t || "";
+		})()`, &token),
 		browserCookieHeader(c.baseURL, &cookie, &names),
 	); err != nil {
 		return nil, err
@@ -317,6 +344,7 @@ captured:
 		UserAgent:   headers.Get("User-Agent"),
 		HasCookie:   strings.TrimSpace(cookie) != "",
 		CookieNames: names,
+		Token:       strings.TrimSpace(token),
 	}, nil
 }
 
@@ -356,6 +384,12 @@ func (c *Client) browserExecutablePath() string {
 		return path
 	}
 	candidates := []string{
+		os.Getenv("CHROME_PATH"),
+		os.Getenv("CHROME_BIN"),
+		"/usr/bin/chromium-browser",
+		"/usr/bin/chromium",
+		"/usr/bin/google-chrome",
+		"/usr/bin/google-chrome-stable",
 		filepath.Join(os.Getenv("ProgramFiles"), "Google", "Chrome", "Application", "chrome.exe"),
 		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Google", "Chrome", "Application", "chrome.exe"),
 		filepath.Join(os.Getenv("LocalAppData"), "Google", "Chrome", "Application", "chrome.exe"),
@@ -374,6 +408,17 @@ func (c *Client) browserExecutablePath() string {
 	return ""
 }
 
+func (c *Client) HasValidBrowserSession(accountKey string) bool {
+	c.browserSessions.mu.RLock()
+	defer c.browserSessions.mu.RUnlock()
+	key := normalizeBrowserSessionKey(accountKey)
+	session := c.browserSessions.accounts[key]
+	if session == nil {
+		session = c.browserSessions.accounts["auth"]
+	}
+	return session != nil && strings.TrimSpace(session.Cookie) != "" && time.Since(session.CapturedAt) <= browserSessionTTL
+}
+
 func (c *Client) injectBrowserCookies(cookieHeader string) chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
 		cookies := map[string]string{}
@@ -386,9 +431,9 @@ func (c *Client) injectBrowserCookies(cookieHeader string) chromedp.Action {
 				continue
 			}
 			err := network.SetCookie(name, value).
-				WithURL(c.baseURL + "/").
+				WithDomain(".qwen.ai").
 				WithPath("/").
-				WithSecure(strings.HasPrefix(strings.ToLower(c.baseURL), "https://")).
+				WithSecure(true).
 				Do(ctx)
 			if err != nil {
 				return err
@@ -469,6 +514,20 @@ func (c *Client) setBrowserSessionForKey(key string, session *BrowserSession) {
 	if c.browserSessions.accounts == nil {
 		c.browserSessions.accounts = map[string]*BrowserSession{}
 	}
+	if existing, ok := c.browserSessions.accounts[key]; ok && existing != nil {
+		if session.Headers.Get("Bx-Ua") == "" && existing.Headers.Get("Bx-Ua") != "" {
+			session.Headers.Set("Bx-Ua", existing.Headers.Get("Bx-Ua"))
+		}
+		if (session.Headers.Get("Bx-Umidtoken") == "" || session.Headers.Get("Bx-Umidtoken") == "default_not_value") && existing.Headers.Get("Bx-Umidtoken") != "" && existing.Headers.Get("Bx-Umidtoken") != "default_not_value" {
+			session.Headers.Set("Bx-Umidtoken", existing.Headers.Get("Bx-Umidtoken"))
+		}
+		if session.Headers.Get("Bx-V") == "" && existing.Headers.Get("Bx-V") != "" {
+			session.Headers.Set("Bx-V", existing.Headers.Get("Bx-V"))
+		}
+		if session.Token == "" && existing.Token != "" {
+			session.Token = existing.Token
+		}
+	}
 	copy := cloneBrowserSession(session)
 	c.browserSessions.accounts[key] = &copy
 }
@@ -486,7 +545,22 @@ func (c *Client) browserSessionForRequest(ctx context.Context, token string) *Br
 			session = c.browserSessions.accounts[key]
 		}
 		if session == nil {
+			for _, s := range c.browserSessions.accounts {
+				if s != nil && s.Token != "" && s.Token == token {
+					session = s
+					break
+				}
+			}
+		}
+		if session == nil {
 			session = c.browserSessions.accounts["auth"]
+		}
+		if session == nil {
+			for _, s := range c.browserSessions.accounts {
+				if s != nil && (session == nil || s.CapturedAt.After(session.CapturedAt)) {
+					session = s
+				}
+			}
 		}
 	}
 	if session == nil || strings.TrimSpace(session.Cookie) == "" || time.Since(session.CapturedAt) > browserSessionTTL {
