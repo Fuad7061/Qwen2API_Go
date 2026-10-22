@@ -136,11 +136,26 @@ export type AccountsResponse = {
   data: AccountItem[];
 };
 
+export type CustomModel = {
+  id: string;
+  name: string;
+  upstream_id: string;
+  chat_type: string;
+  description?: string;
+  search: boolean;
+  thinking: boolean;
+};
+
 export type ModelItem = {
   id: string;
   name: string;
   upstream_id?: string;
   display_name?: string;
+  chat_type?: string;
+  custom?: boolean;
+  search?: boolean;
+  thinking?: boolean;
+  description?: string;
   usage?: {
     promptTokens: number;
     completionTokens: number;

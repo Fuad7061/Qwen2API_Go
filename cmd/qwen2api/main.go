@@ -67,7 +67,7 @@ func main() {
 	defer accountService.Close()
 	defer cleanupService.Stop()
 
-	openAIHandler := openai.NewHandler(cfg, runtime, qwenClient, accountService, conversationSessions, chatTracker, stats, logger)
+	openAIHandler := openai.NewHandler(cfg, runtime, store, qwenClient, accountService, conversationSessions, chatTracker, stats, logger)
 	adminHandler := admin.NewHandler(cfg, runtime, keyring, accountService, openAIHandler, stats, logger)
 	httpServer := server.New(cfg, keyring, openAIHandler, adminHandler, stats, logger)
 	serverErrCh := make(chan error, 1)

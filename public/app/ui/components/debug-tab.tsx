@@ -209,7 +209,6 @@ export function DebugTab({
             </div>
             <Input
               type="text"
-              size="sm"
               value={customApiKey}
               placeholder="Enter your API Key (e.g. sk-admin-change-me)"
               onChange={(e) => setCustomApiKey(e.target.value)}

@@ -102,6 +102,16 @@ func New(cfg config.Config, keyring *auth.Keyring, openAIHandler *openai.Handler
 	handle("/api/dashboard/overview", "admin", ensureMethod(http.MethodGet, withAdminKey(adminHandler.HandleOverview)))
 	handle("/api/models", "admin", ensureMethod(http.MethodGet, withAdminKey(adminHandler.HandleModels)))
 	handle("/api/refresh-models", "admin", ensureMethod(http.MethodPost, withAdminKey(adminHandler.HandleRefreshModels)))
+	handle("/api/custom-models", "admin", ensureMethods(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			withAdminKey(adminHandler.HandleGetCustomModels)(w, r)
+		} else if r.Method == http.MethodPost {
+			withAdminKey(adminHandler.HandleSaveCustomModel)(w, r)
+		} else if r.Method == http.MethodDelete {
+			withAdminKey(adminHandler.HandleDeleteCustomModel)(w, r)
+		}
+	}), http.MethodGet, http.MethodPost, http.MethodDelete))
+	handle("/api/custom-models/delete", "admin", ensureMethod(http.MethodPost, withAdminKey(adminHandler.HandleDeleteCustomModel)))
 	handle("/api/settings", "admin", ensureMethod(http.MethodGet, withAdminKey(adminHandler.HandleSettings)))
 	handle("/api/prompts", "admin", withAdminKey(adminHandler.HandlePromptsAPI))
 	handle("/api/prompts/reset", "admin", ensureMethod(http.MethodPost, withAdminKey(adminHandler.HandleResetPrompts)))

@@ -61,6 +61,14 @@ func (s *stubAccountStore) SaveBrowserSessions(sessions map[string]storage.Brows
 	return nil
 }
 
+func (s *stubAccountStore) LoadCustomModels() ([]storage.CustomModel, error) {
+	return []storage.CustomModel{}, nil
+}
+
+func (s *stubAccountStore) SaveCustomModels(models []storage.CustomModel) error {
+	return nil
+}
+
 func upsertAccount(accounts []storage.Account, next storage.Account) []storage.Account {
 	for i, account := range accounts {
 		if strings.EqualFold(account.Email, next.Email) {

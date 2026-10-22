@@ -441,6 +441,54 @@ func (h *Handler) HandleRefreshModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.modelsResponse(models))
 }
 
+func (h *Handler) HandleGetCustomModels(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"customModels": h.openai.GetCustomModels(),
+	})
+}
+
+func (h *Handler) HandleSaveCustomModel(w http.ResponseWriter, r *http.Request) {
+	var body storage.CustomModel
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Invalid request body"})
+		return
+	}
+	if strings.TrimSpace(body.ID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Model ID is required"})
+		return
+	}
+	if err := h.openai.SaveCustomModel(body); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":      true,
+		"customModels": h.openai.GetCustomModels(),
+	})
+}
+
+func (h *Handler) HandleDeleteCustomModel(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if strings.TrimSpace(body.ID) == "" {
+		body.ID = r.URL.Query().Get("id")
+	}
+	if strings.TrimSpace(body.ID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "Model ID is required"})
+		return
+	}
+	if err := h.openai.DeleteCustomModel(body.ID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":      true,
+		"customModels": h.openai.GetCustomModels(),
+	})
+}
+
 func (h *Handler) modelsResponse(models []map[string]any) map[string]any {
 	usageByModel := h.metrics.ModelUsageSnapshot()
 	result := make([]map[string]any, 0, len(models))

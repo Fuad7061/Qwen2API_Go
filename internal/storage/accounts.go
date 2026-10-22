@@ -38,12 +38,23 @@ func (a Account) BrowserSessionKey() string {
 	return strings.ToLower(strings.TrimSpace(a.Email))
 }
 
+type CustomModel struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	UpstreamID  string `json:"upstream_id"`
+	ChatType    string `json:"chat_type"`              // "t2t", "t2i", "t2v"
+	Description string `json:"description,omitempty"`
+	Search      bool   `json:"search"`
+	Thinking    bool   `json:"thinking"`
+}
+
 type FileData struct {
 	DefaultHeaders       any                       `json:"defaultHeaders"`
 	DefaultCookie        any                       `json:"defaultCookie"`
 	BrowserSessions      map[string]BrowserSession `json:"browserSessions,omitempty"`
 	Accounts             []Account                 `json:"accounts"`
 	ConversationSessions []ConversationSession     `json:"conversationSessions,omitempty"`
+	CustomModels         []CustomModel             `json:"customModels,omitempty"`
 }
 
 type BrowserSession struct {
@@ -65,6 +76,8 @@ type AccountStore interface {
 	SaveAllAccounts(accounts []Account) error
 	LoadBrowserSessions() (map[string]BrowserSession, error)
 	SaveBrowserSessions(sessions map[string]BrowserSession) error
+	LoadCustomModels() ([]CustomModel, error)
+	SaveCustomModels(models []CustomModel) error
 }
 
 type fileStore struct {
@@ -73,7 +86,9 @@ type fileStore struct {
 }
 
 type envStore struct {
-	accounts []Account
+	mu           sync.Mutex
+	accounts     []Account
+	customModels []CustomModel
 }
 
 type redisStore struct {
@@ -160,6 +175,19 @@ func (s *envStore) SaveBrowserSessions(map[string]BrowserSession) error {
 	return errors.New("环境变量模式不支持保存浏览器会话")
 }
 
+func (s *envStore) LoadCustomModels() ([]CustomModel, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]CustomModel(nil), s.customModels...), nil
+}
+
+func (s *envStore) SaveCustomModels(models []CustomModel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.customModels = append([]CustomModel(nil), models...)
+	return nil
+}
+
 func (s *fileStore) LoadAccounts() ([]Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,6 +271,29 @@ func (s *fileStore) SaveBrowserSessions(sessions map[string]BrowserSession) erro
 		return err
 	}
 	data.BrowserSessions = cloneBrowserSessions(sessions)
+	return s.write(data)
+}
+
+func (s *fileStore) LoadCustomModels() ([]CustomModel, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	return append([]CustomModel(nil), data.CustomModels...), nil
+}
+
+func (s *fileStore) SaveCustomModels(models []CustomModel) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	data, err := s.read()
+	if err != nil {
+		return err
+	}
+	data.CustomModels = append([]CustomModel(nil), models...)
 	return s.write(data)
 }
 
@@ -451,6 +502,34 @@ func (s *redisStore) SaveBrowserSessions(sessions map[string]BrowserSession) err
 	}
 	_, err = pipe.Exec(ctx)
 	return err
+}
+
+func (s *redisStore) LoadCustomModels() ([]CustomModel, error) {
+	ctx, cancel := redisContext()
+	defer cancel()
+
+	val, err := s.client.Get(ctx, "custom_models").Result()
+	if errors.Is(err, redis.Nil) {
+		return []CustomModel{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var models []CustomModel
+	if err := json.Unmarshal([]byte(val), &models); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
+func (s *redisStore) SaveCustomModels(models []CustomModel) error {
+	ctx, cancel := redisContext()
+	defer cancel()
+
+	raw, err := json.Marshal(models)
+	if err != nil {
+		return err
+	}
+	return s.client.Set(ctx, "custom_models", raw, 0).Err()
 }
 
 func (s *redisStore) scanUserKeys(ctx context.Context) ([]string, error) {

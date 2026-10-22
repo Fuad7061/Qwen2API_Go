@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"qwen2api/internal/account"
@@ -30,27 +31,98 @@ import (
 var dataURIExpr = regexp.MustCompile(`^data:([^;]+);base64,(.*)$`)
 
 type Handler struct {
-	cfg         config.Config
-	runtime     *config.Runtime
-	qwen        *qwen.Client
-	accounts    *account.Service
-	sessions    *ConversationSessionService
-	chatTracker storage.ChatTracker
-	metrics     *metrics.DashboardStats
-	logger      *logging.Logger
+	cfg            config.Config
+	runtime        *config.Runtime
+	store          storage.AccountStore
+	qwen           *qwen.Client
+	accounts       *account.Service
+	sessions       *ConversationSessionService
+	chatTracker    storage.ChatTracker
+	metrics        *metrics.DashboardStats
+	logger         *logging.Logger
+	customModelsMu sync.RWMutex
+	customModels   []storage.CustomModel
 }
 
-func NewHandler(cfg config.Config, runtime *config.Runtime, qwenClient *qwen.Client, accounts *account.Service, sessions *ConversationSessionService, chatTracker storage.ChatTracker, stats *metrics.DashboardStats, logger *logging.Logger) *Handler {
-	return &Handler{
-		cfg:         cfg,
-		runtime:     runtime,
-		qwen:        qwenClient,
-		accounts:    accounts,
-		sessions:    sessions,
-		chatTracker: chatTracker,
-		metrics:     stats,
-		logger:      logger,
+func NewHandler(cfg config.Config, runtime *config.Runtime, store storage.AccountStore, qwenClient *qwen.Client, accounts *account.Service, sessions *ConversationSessionService, chatTracker storage.ChatTracker, stats *metrics.DashboardStats, logger *logging.Logger) *Handler {
+	var initialCustomModels []storage.CustomModel
+	if store != nil {
+		if loaded, err := store.LoadCustomModels(); err == nil {
+			initialCustomModels = loaded
+		}
 	}
+	return &Handler{
+		cfg:          cfg,
+		runtime:      runtime,
+		store:        store,
+		qwen:         qwenClient,
+		accounts:     accounts,
+		sessions:     sessions,
+		chatTracker:  chatTracker,
+		metrics:      stats,
+		logger:       logger,
+		customModels: initialCustomModels,
+	}
+}
+
+func (h *Handler) GetCustomModels() []storage.CustomModel {
+	h.customModelsMu.RLock()
+	defer h.customModelsMu.RUnlock()
+	return append([]storage.CustomModel(nil), h.customModels...)
+}
+
+func (h *Handler) SaveCustomModel(model storage.CustomModel) error {
+	h.customModelsMu.Lock()
+	defer h.customModelsMu.Unlock()
+
+	model.ID = strings.TrimSpace(model.ID)
+	if model.ID == "" {
+		return errors.New("Model ID cannot be empty")
+	}
+	if strings.TrimSpace(model.Name) == "" {
+		model.Name = model.ID
+	}
+	if strings.TrimSpace(model.UpstreamID) == "" {
+		model.UpstreamID = "qwen3.7-plus"
+	}
+	if strings.TrimSpace(model.ChatType) == "" {
+		model.ChatType = "t2t"
+	}
+
+	updated := false
+	for i, m := range h.customModels {
+		if strings.EqualFold(m.ID, model.ID) {
+			h.customModels[i] = model
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		h.customModels = append(h.customModels, model)
+	}
+
+	if h.store != nil {
+		return h.store.SaveCustomModels(h.customModels)
+	}
+	return nil
+}
+
+func (h *Handler) DeleteCustomModel(id string) error {
+	h.customModelsMu.Lock()
+	defer h.customModelsMu.Unlock()
+
+	filtered := make([]storage.CustomModel, 0, len(h.customModels))
+	for _, m := range h.customModels {
+		if !strings.EqualFold(m.ID, id) {
+			filtered = append(filtered, m)
+		}
+	}
+	h.customModels = filtered
+
+	if h.store != nil {
+		return h.store.SaveCustomModels(h.customModels)
+	}
+	return nil
 }
 
 type upstreamMessage struct {
@@ -239,6 +311,16 @@ func (h *Handler) ResolveModel(ctx context.Context, requested string, chatType s
 	base := splitModelSuffix(strings.TrimSpace(requested))
 	if base == "" {
 		base = "qwen3.7-plus"
+	}
+
+	// 1. Check user-defined custom models first
+	for _, cm := range h.GetCustomModels() {
+		if strings.EqualFold(cm.ID, base) || strings.EqualFold(cm.Name, base) {
+			if strings.TrimSpace(cm.UpstreamID) != "" {
+				return cm.UpstreamID, nil
+			}
+			return cm.ID, nil
+		}
 	}
 
 	normalized := strings.ToLower(base)
@@ -914,6 +996,7 @@ func (h *Handler) listModelVariants(ctx context.Context, force bool) ([]map[stri
 			result = append(result, buildModelVariant(model, "-image-edit"))
 		}
 	}
+	result = h.appendCustomModelVariants(result)
 	return result, nil
 }
 
@@ -942,7 +1025,45 @@ func (h *Handler) DefaultModelVariants() []map[string]any {
 			result = append(result, buildModelVariant(model, "-image-edit"))
 		}
 	}
+	result = h.appendCustomModelVariants(result)
 	return result
+}
+
+func (h *Handler) appendCustomModelVariants(result []map[string]any) []map[string]any {
+	customs := h.GetCustomModels()
+	if len(customs) == 0 {
+		return result
+	}
+	customEntries := make([]map[string]any, 0, len(customs))
+	for _, cm := range customs {
+		displayName := cm.Name
+		if displayName == "" {
+			displayName = cm.ID
+		}
+		upstreamID := cm.UpstreamID
+		if upstreamID == "" {
+			upstreamID = "qwen3.7-plus"
+		}
+		chatType := cm.ChatType
+		if chatType == "" {
+			chatType = "t2t"
+		}
+		customEntries = append(customEntries, map[string]any{
+			"id":           cm.ID,
+			"object":       "model",
+			"created":      0,
+			"owned_by":     "custom",
+			"name":         cm.ID,
+			"display_name": displayName,
+			"upstream_id":  upstreamID,
+			"chat_type":    chatType,
+			"custom":       true,
+			"search":       cm.Search,
+			"thinking":     cm.Thinking,
+			"description":  cm.Description,
+		})
+	}
+	return append(customEntries, result...)
 }
 
 func defaultQwenModels() []qwen.Model {

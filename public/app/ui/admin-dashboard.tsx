@@ -314,6 +314,7 @@ export function AdminDashboard({ initialTab }: { initialTab?: TabKey } = {}) {
               setKeyword={actions.setModelKeyword}
               refreshingModels={state.refreshingModels}
               refreshModels={actions.refreshModels}
+              apiKey={state.apiKey}
             />
           ) : null}
 
