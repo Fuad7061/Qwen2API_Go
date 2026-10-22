@@ -2,6 +2,7 @@ package qwen
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -228,44 +229,70 @@ func (c *Client) captureBrowserSession(ctx context.Context, cookieHeader string,
 	var capturedHeaders http.Header
 	var capturedSourceURL string
 	var capturedScore int
+	var capturedToken string
+	var authResponseReqID network.RequestID
+
 	chromedp.ListenTarget(browserCtx, func(ev any) {
-		event, ok := ev.(*network.EventRequestWillBeSent)
-		if !ok || event.Request == nil {
-			return
-		}
-		requestURL := strings.TrimSpace(event.Request.URL)
-		if !strings.Contains(requestURL, "/api/") {
-			return
-		}
-		headers := browserHeadersFromNetwork(event.Request.Headers)
-		if len(headers) == 0 {
-			return
-		}
-		preferred := strings.Contains(requestURL, "/api/v2/chats/new") || strings.Contains(requestURL, "/api/v2/chat/completions")
-		score := 0
-		if headers.Get("Bx-Ua") != "" {
-			score += 10
-		}
-		if umid := headers.Get("Bx-Umidtoken"); umid != "" && umid != "default_not_value" {
-			score += 20
-		}
-		if headers.Get("Bx-V") != "" {
-			score += 10
-		}
-		if preferred {
-			score += 5
-		}
-		captureMu.Lock()
-		if capturedHeaders == nil || score > capturedScore {
-			capturedHeaders = headers
-			capturedSourceURL = requestURL
-			capturedScore = score
-		}
-		captureMu.Unlock()
-		select {
-		case headerCh <- headers:
-			sourceURLCh <- requestURL
-		default:
+		switch event := ev.(type) {
+		case *network.EventRequestWillBeSent:
+			if event.Request == nil {
+				return
+			}
+			requestURL := strings.TrimSpace(event.Request.URL)
+			for k, v := range event.Request.Headers {
+				if strings.EqualFold(k, "Authorization") {
+					raw := strings.TrimSpace(fmt.Sprint(v))
+					if strings.HasPrefix(strings.ToLower(raw), "bearer ") {
+						tok := strings.TrimSpace(raw[7:])
+						if tok != "" {
+							captureMu.Lock()
+							if capturedToken == "" {
+								capturedToken = tok
+							}
+							captureMu.Unlock()
+						}
+					}
+				}
+			}
+			if !strings.Contains(requestURL, "/api/") {
+				return
+			}
+			headers := browserHeadersFromNetwork(event.Request.Headers)
+			if len(headers) == 0 {
+				return
+			}
+			preferred := strings.Contains(requestURL, "/api/v2/chats/new") || strings.Contains(requestURL, "/api/v2/chat/completions")
+			score := 0
+			if headers.Get("Bx-Ua") != "" {
+				score += 10
+			}
+			if umid := headers.Get("Bx-Umidtoken"); umid != "" && umid != "default_not_value" {
+				score += 20
+			}
+			if headers.Get("Bx-V") != "" {
+				score += 10
+			}
+			if preferred {
+				score += 5
+			}
+			captureMu.Lock()
+			if capturedHeaders == nil || score > capturedScore {
+				capturedHeaders = headers
+				capturedSourceURL = requestURL
+				capturedScore = score
+			}
+			captureMu.Unlock()
+			select {
+			case headerCh <- headers:
+				sourceURLCh <- requestURL
+			default:
+			}
+		case *network.EventResponseReceived:
+			if event.Response != nil && strings.Contains(event.Response.URL, "/auths/") && event.Response.Status == 200 {
+				captureMu.Lock()
+				authResponseReqID = event.RequestID
+				captureMu.Unlock()
+			}
 		}
 	})
 
@@ -291,6 +318,34 @@ func (c *Client) captureBrowserSession(ctx context.Context, cookieHeader string,
 			return t || "";
 		})()`, &token),
 		browserCookieHeader(c.baseURL, &cookie, &names),
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			captureMu.Lock()
+			reqID := authResponseReqID
+			captureMu.Unlock()
+			if string(reqID) != "" {
+				bodyBytes, err := network.GetResponseBody(reqID).Do(ctx)
+				if err == nil && len(bodyBytes) > 0 {
+					var authPayload struct {
+						Success bool           `json:"success"`
+						Data    map[string]any `json:"data"`
+					}
+					if err := json.Unmarshal(bodyBytes, &authPayload); err == nil && authPayload.Data != nil {
+						for _, k := range []string{"access_token", "token", "accessToken"} {
+							if val, ok := authPayload.Data[k].(string); ok && strings.TrimSpace(val) != "" {
+								token = strings.TrimSpace(val)
+								break
+							}
+						}
+					}
+				}
+			}
+			if token == "" {
+				captureMu.Lock()
+				token = capturedToken
+				captureMu.Unlock()
+			}
+			return nil
+		}),
 	); err != nil {
 		return nil, err
 	}

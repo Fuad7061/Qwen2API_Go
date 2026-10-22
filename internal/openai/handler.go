@@ -848,13 +848,8 @@ type chatRequest struct {
 
 func (h *Handler) HandleModels(w http.ResponseWriter, r *http.Request) {
 	result, err := h.ListModelVariants(r.Context())
-	if err != nil {
-		status := http.StatusBadGateway
-		if upstreamErr, ok := err.(*qwen.UpstreamError); ok {
-			status = normalizeUpstreamStatus(upstreamErr.StatusCode)
-		}
-		writeJSON(w, status, map[string]any{"error": err.Error()})
-		return
+	if (err != nil || len(result) == 0) && len(result) == 0 {
+		result = h.DefaultModelVariants()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
@@ -871,23 +866,25 @@ func (h *Handler) RefreshModelVariants(ctx context.Context) ([]map[string]any, e
 }
 
 func (h *Handler) listModelVariants(ctx context.Context, force bool) ([]map[string]any, error) {
-	session, err := h.accounts.GetAccountSession()
-	if err != nil {
-		return nil, err
-	}
-	ctx = bindAccountContext(ctx, session)
-
 	var models []qwen.Model
-	if force {
-		models, err = h.qwen.RefreshModels(ctx, session.Token)
-	} else {
-		models, err = h.qwen.ListModels(ctx, session.Token)
+	session, err := h.accounts.GetAccountSession()
+	if err == nil && session.Token != "" {
+		ctx = bindAccountContext(ctx, session)
+		if force {
+			models, err = h.qwen.RefreshModels(ctx, session.Token)
+		} else {
+			models, err = h.qwen.ListModels(ctx, session.Token)
+		}
+		if err != nil {
+			h.accounts.RecordFailureAndRefresh(ctx, session.Email)
+		} else {
+			h.accounts.ResetFailure(session.Email)
+		}
 	}
-	if err != nil {
-		h.accounts.RecordFailureAndRefresh(ctx, session.Email)
-		return nil, err
+
+	if len(models) == 0 {
+		models = defaultQwenModels()
 	}
-	h.accounts.ResetFailure(session.Email)
 
 	simple := h.runtime.Snapshot().SimpleModelMap
 	result := make([]map[string]any, 0)
@@ -914,6 +911,69 @@ func (h *Handler) listModelVariants(ctx context.Context, force bool) ([]map[stri
 		}
 	}
 	return result, nil
+}
+
+func (h *Handler) DefaultModelVariants() []map[string]any {
+	simple := h.runtime.Snapshot().SimpleModelMap
+	result := make([]map[string]any, 0)
+	for _, model := range defaultQwenModels() {
+		result = append(result, buildModelVariant(model, ""))
+		result = append(result, buildModelVariant(model, "-fast"))
+		result = append(result, buildModelVariant(model, "-thinking"))
+		if simple {
+			continue
+		}
+		if modelSupports(model.Info, "search") {
+			result = append(result, buildModelVariant(model, "-search"))
+			result = append(result, buildModelVariant(model, "-fast-search"))
+			result = append(result, buildModelVariant(model, "-thinking-search"))
+		}
+		if modelSupports(model.Info, "t2i") {
+			result = append(result, buildModelVariant(model, "-image"))
+		}
+		if modelSupports(model.Info, "t2v") {
+			result = append(result, buildModelVariant(model, "-video"))
+		}
+		if modelSupports(model.Info, "image_edit") {
+			result = append(result, buildModelVariant(model, "-image-edit"))
+		}
+	}
+	return result
+}
+
+func defaultQwenModels() []qwen.Model {
+	return []qwen.Model{
+		{
+			ID:   "qwen3-235b-a22b",
+			Name: "Qwen3-235B-A22B",
+			Info: map[string]any{"search": true, "chat_type": "t2t"},
+		},
+		{
+			ID:   "qwen-max",
+			Name: "Qwen-Max",
+			Info: map[string]any{"search": true, "chat_type": "t2t"},
+		},
+		{
+			ID:   "qwen-plus",
+			Name: "Qwen-Plus",
+			Info: map[string]any{"search": true, "chat_type": "t2t"},
+		},
+		{
+			ID:   "qwen-turbo",
+			Name: "Qwen-Turbo",
+			Info: map[string]any{"search": true, "chat_type": "t2t"},
+		},
+		{
+			ID:   "qvq-72b-preview",
+			Name: "QVQ-72B-Preview",
+			Info: map[string]any{"search": true, "chat_type": "t2t"},
+		},
+		{
+			ID:   "wanx-2.1",
+			Name: "Wanx-2.1",
+			Info: map[string]any{"t2i": true, "t2v": true, "image_edit": true, "chat_type": "t2i"},
+		},
+	}
 }
 
 func buildModelVariant(model qwen.Model, suffix string) map[string]any {

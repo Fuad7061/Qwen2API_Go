@@ -384,7 +384,7 @@ func (s *Service) AddAccount(ctx context.Context, email, password string, cookie
 		if err != nil {
 			return fmt.Errorf("Token 解析失败: %w", err)
 		}
-		if err := s.AddAccountWithToken(email, password, session.Token, exp, cookie); err != nil {
+		if err := s.AddAccountWithToken(email, "", session.Token, exp, cookie); err != nil {
 			return err
 		}
 		s.saveBrowserSessions()
@@ -495,9 +495,11 @@ func (s *Service) RefreshAccount(ctx context.Context, email string) error {
 			s.mu.Unlock()
 			return nil
 		}
-		if strings.TrimSpace(account.Password) == "" && strings.TrimSpace(account.Cookie) != "" {
+		if strings.TrimSpace(account.Cookie) != "" {
 			s.mu.Unlock()
-			s.refreshBrowserSessionForAccount(ctx, account)
+			if err := s.refreshBrowserSessionForAccount(ctx, account); err != nil {
+				return err
+			}
 			s.mu.Lock()
 			s.failures[email] = 0
 			s.mu.Unlock()
@@ -753,49 +755,51 @@ func (s *Service) accountByEmailLocked(email string) (storage.Account, bool) {
 	return storage.Account{}, false
 }
 
-func (s *Service) refreshBrowserSessionForAccount(ctx context.Context, account storage.Account) {
+func (s *Service) refreshBrowserSessionForAccount(ctx context.Context, account storage.Account) error {
 	if !s.client.BrowserAuthEnabled() {
-		return
+		return errors.New("浏览器会话功能未启用")
 	}
 	if account.IsGuest() {
 		if _, err := s.client.CaptureGuestBrowserSession(ctx); err != nil {
 			s.logger.WarnModule("ACCOUNT", "游客浏览器会话采集失败: %v", err)
-			return
+			return err
 		}
 		s.saveBrowserSessions()
-		return
+		return nil
 	}
 	cookieHeader := accountBrowserCookieHeader(account)
 	if strings.TrimSpace(cookieHeader) == "" {
-		return
+		return errors.New("账号未配置有效的 Cookie")
 	}
 	session, err := s.client.CaptureBrowserSessionForAccount(ctx, account.BrowserSessionKey(), cookieHeader)
 	if err != nil {
 		s.logger.WarnModule("ACCOUNT", "账号浏览器会话采集失败 email=%s err=%v", account.Email, err)
-		return
+		return err
 	}
 	s.saveBrowserSessions()
 
 	hasToken := session != nil && strings.TrimSpace(session.Token) != ""
 	s.logger.InfoModule("ACCOUNT", "账号浏览器会话采集完成 email=%s has_token=%v", account.Email, hasToken)
-	if hasToken {
-		exp, err := decodeExpiry(session.Token)
-		if err == nil {
-			s.mu.Lock()
-			for i, acc := range s.accounts {
-				if strings.EqualFold(acc.Email, account.Email) {
-					s.accounts[i].Token = session.Token
-					s.accounts[i].Expires = exp
-					_ = s.store.SaveAccount(s.accounts[i])
-					s.logger.InfoModule("ACCOUNT", "账号已自动从浏览器提取最新 Access Token email=%s expires=%d", account.Email, exp)
-					break
-				}
-			}
-			s.mu.Unlock()
-		} else {
-			s.logger.WarnModule("ACCOUNT", "提取的 Token 解析过期时间失败: %v", err)
+	if !hasToken {
+		return errors.New("未能从当前 Cookie 采集到有效的 Access Token，请在浏览器中重新登录网页后复制最新 Cookie")
+	}
+	exp, err := decodeExpiry(session.Token)
+	if err != nil {
+		s.logger.WarnModule("ACCOUNT", "提取的 Token 解析过期时间失败: %v", err)
+		return fmt.Errorf("Token 解析失败: %w", err)
+	}
+	s.mu.Lock()
+	for i, acc := range s.accounts {
+		if strings.EqualFold(acc.Email, account.Email) {
+			s.accounts[i].Token = session.Token
+			s.accounts[i].Expires = exp
+			_ = s.store.SaveAccount(s.accounts[i])
+			s.logger.InfoModule("ACCOUNT", "账号已自动从浏览器提取最新 Access Token email=%s expires=%d", account.Email, exp)
+			break
 		}
 	}
+	s.mu.Unlock()
+	return nil
 }
 
 func accountBrowserCookieHeader(account storage.Account) string {

@@ -424,20 +424,18 @@ func (h *Handler) HandleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) HandleModels(w http.ResponseWriter, r *http.Request) {
-	models, err := h.openai.ListModelVariants(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
-		return
+	models, _ := h.openai.ListModelVariants(r.Context())
+	if len(models) == 0 {
+		models = h.openai.DefaultModelVariants()
 	}
 
 	writeJSON(w, http.StatusOK, h.modelsResponse(models))
 }
 
 func (h *Handler) HandleRefreshModels(w http.ResponseWriter, r *http.Request) {
-	models, err := h.openai.RefreshModelVariants(r.Context())
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
-		return
+	models, _ := h.openai.RefreshModelVariants(r.Context())
+	if len(models) == 0 {
+		models = h.openai.DefaultModelVariants()
 	}
 
 	writeJSON(w, http.StatusOK, h.modelsResponse(models))
