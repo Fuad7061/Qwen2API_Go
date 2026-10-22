@@ -373,12 +373,43 @@ func (s *Service) AddAccount(ctx context.Context, email, password string, cookie
 	s.mu.RUnlock()
 
 	if strings.TrimSpace(cookie) != "" {
+		cookie = strings.TrimSpace(cookie)
+		// Check if user provided raw JWT token in the Cookie field
+		if strings.HasPrefix(cookie, "eyJ") || (!strings.Contains(cookie, "=") && strings.Count(cookie, ".") >= 2) {
+			parts := strings.Split(cookie, ".")
+			if len(parts) >= 2 {
+				if payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+					var jwtBody struct {
+						Type string `json:"type"`
+						Exp  int64  `json:"exp"`
+					}
+					_ = json.Unmarshal(payloadBytes, &jwtBody)
+					if jwtBody.Type == "refresh_token" {
+						cookie = "refresh_token=" + cookie
+					} else if jwtBody.Type == "access_token" || (jwtBody.Exp > time.Now().Unix()) {
+						exp := jwtBody.Exp
+						if exp <= 0 {
+							exp = time.Now().Add(12 * time.Hour).Unix()
+						}
+						if err := s.AddAccountWithToken(email, password, cookie, exp, ""); err != nil {
+							return err
+						}
+						return nil
+					}
+				}
+			}
+		}
+
+		if !strings.Contains(cookie, "refresh_token=") && !strings.Contains(cookie, "token=") {
+			return errors.New("Cookie 缺少身份凭证：必须包含 refresh_token=... (请在 chat.qwen.ai 登录后完整复制 document.cookie) / Cookie must contain 'refresh_token='")
+		}
+
 		session, err := s.client.CaptureBrowserSessionForAccount(ctx, strings.ToLower(email), cookie)
 		if err != nil {
 			return fmt.Errorf("浏览器会话采集失败: %w", err)
 		}
 		if session == nil || strings.TrimSpace(session.Token) == "" {
-			return errors.New("无法从 Cookie 中提取有效的 Access Token")
+			return errors.New("无法从 Cookie 中提取有效的 Access Token (请检查 Cookie 是否已过期) / Could not extract valid Access Token from Cookie")
 		}
 		exp, err := decodeExpiry(session.Token)
 		if err != nil {

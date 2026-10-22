@@ -264,6 +264,7 @@ export function AdminDashboard({ initialTab }: { initialTab?: TabKey } = {}) {
               newAccountCookie={state.newAccountCookie}
               batchAccountsText={state.batchAccountsText}
               loadingAccounts={state.loadingAccounts}
+              creatingAccount={state.creatingAccount}
               actions={{
                 setNewAccountEmail: actions.setNewAccountEmail,
                 setNewAccountPassword: actions.setNewAccountPassword,

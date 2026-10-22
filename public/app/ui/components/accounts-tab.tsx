@@ -32,6 +32,7 @@ export function AccountsTab({
   newAccountCookie,
   batchAccountsText,
   loadingAccounts,
+  creatingAccount,
   actions,
 }: {
   accounts: AccountsResponse | null;
@@ -43,6 +44,7 @@ export function AccountsTab({
   newAccountCookie: string;
   batchAccountsText: string;
   loadingAccounts: boolean;
+  creatingAccount?: boolean;
   actions: AccountsActions;
 }) {
   const { t } = useTranslation();
@@ -71,16 +73,25 @@ export function AccountsTab({
               value={newAccountPassword}
               onChange={(e) => actions.setNewAccountPassword(e.target.value)}
             />
-            <textarea
-              className="admin-textarea"
-              rows={3}
-              placeholder="Cookie (optional, e.g. cnaui=...; refresh_token=...)"
-              value={newAccountCookie}
-              onChange={(e) => actions.setNewAccountCookie(e.target.value)}
-            />
-            <button className="admin-btn admin-btn-primary self-start" onClick={() => void actions.createAccount()}>
-              <Plus size={16} />
-              {t("common.create")}
+            <div>
+              <textarea
+                className="admin-textarea"
+                rows={3}
+                placeholder="Cookie (optional, e.g. cnaui=...; refresh_token=...)"
+                value={newAccountCookie}
+                onChange={(e) => actions.setNewAccountCookie(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-[var(--text-muted)]">
+                💡 Tip: Cookie must include <code className="text-amber-400 font-mono">refresh_token=...</code> (or copy full <code className="text-amber-400 font-mono">document.cookie</code> from chat.qwen.ai).
+              </p>
+            </div>
+            <button
+              className="admin-btn admin-btn-primary self-start flex items-center gap-2"
+              disabled={creatingAccount}
+              onClick={() => void actions.createAccount()}
+            >
+              {creatingAccount ? <RefreshCw size={16} className="animate-spin" /> : <Plus size={16} />}
+              {creatingAccount ? "Adding Account..." : t("common.create")}
             </button>
           </div>
         </div>

@@ -71,6 +71,7 @@ export function useAdminConsole(initialTab?: TabKey) {
   const [addKeyValue, setAddKeyValue] = useState("");
   const [thresholdHours, setThresholdHours] = useState("24");
   const [savingSettings, setSavingSettings] = useState(false);
+  const [creatingAccount, setCreatingAccount] = useState(false);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [activeTab, setActiveTab] = useState<TabKey>(initialTab || "overview");
   const [themeMode, setThemeMode] = useState<ThemeMode>(getInitialTheme);
@@ -345,6 +346,7 @@ export function useAdminConsole(initialTab?: TabKey) {
       addKeyValue,
       thresholdHours,
       savingSettings,
+      creatingAccount,
       refreshingModels,
       activeTab,
       themeMode,
@@ -394,45 +396,85 @@ export function useAdminConsole(initialTab?: TabKey) {
       toggleTheme: () => setThemeMode((current) => (current === "light" ? "dark" : "light")),
       changeLanguage,
       createAccount: async () => {
-        await submitAction("/api/setAccount", {
-          email: newAccountEmail,
-          password: newAccountPassword,
-          cookie: newAccountCookie,
-        });
-        setNewAccountEmail("");
-        setNewAccountPassword("");
-        setNewAccountCookie("");
-        setToast({ type: "success", message: "账号创建成功。" });
-        await loadAccounts();
-        await loadShell();
+        const email = newAccountEmail.trim();
+        const cookie = newAccountCookie.trim();
+        const password = newAccountPassword.trim();
+
+        if (!email) {
+          setToast({ type: "error", message: "邮箱不能为空 / Email cannot be empty." });
+          return;
+        }
+        if (!password && !cookie) {
+          setToast({ type: "error", message: "密码或 Cookie 不能同时为空 / Please provide either password or cookie." });
+          return;
+        }
+        if (cookie && !cookie.includes("=") && !cookie.startsWith("eyJ")) {
+          setToast({ type: "error", message: "Cookie 格式不完整：必须包含 refresh_token=... (请从 chat.qwen.ai 复制 document.cookie)" });
+          return;
+        }
+
+        try {
+          setCreatingAccount(true);
+          await submitAction("/api/setAccount", {
+            email,
+            password,
+            cookie,
+          });
+          setNewAccountEmail("");
+          setNewAccountPassword("");
+          setNewAccountCookie("");
+          setToast({ type: "success", message: "账号创建成功。" });
+          await loadAccounts();
+          await loadShell();
+        } catch (error) {
+          setToast({ type: "error", message: error instanceof Error ? error.message : "创建账号失败" });
+        } finally {
+          setCreatingAccount(false);
+        }
       },
       createBatchTask: async () => {
-        const response = await submitAction<BatchTaskResponse>("/api/setAccounts", { accounts: batchAccountsText, async: true });
-        if (response) {
-          setBatchTask(response);
-          setBatchAccountsText("");
-          setToast({ type: "info", message: "批量任务已创建，后台正在处理。" });
+        try {
+          const response = await submitAction<BatchTaskResponse>("/api/setAccounts", { accounts: batchAccountsText, async: true });
+          if (response) {
+            setBatchTask(response);
+            setBatchAccountsText("");
+            setToast({ type: "info", message: "批量任务已创建，后台正在处理。" });
+          }
+        } catch (error) {
+          setToast({ type: "error", message: error instanceof Error ? error.message : "批量任务创建失败" });
         }
       },
       deleteAccount: async (email: string) => {
-        await submitAction("/api/deleteAccount", { email }, "DELETE");
-        setToast({ type: "success", message: `已删除 ${email}` });
-        await loadAccounts();
-        await loadShell();
+        try {
+          await submitAction("/api/deleteAccount", { email }, "DELETE");
+          setToast({ type: "success", message: `已删除 ${email}` });
+          await loadAccounts();
+          await loadShell();
+        } catch (error) {
+          setToast({ type: "error", message: error instanceof Error ? error.message : `删除 ${email} 失败` });
+        }
       },
       refreshAccount: async (email: string) => {
-        await submitAction("/api/refreshAccount", { email });
-        setToast({ type: "success", message: `${email} 刷新成功` });
-        await loadAccounts();
-        await loadShell();
+        try {
+          await submitAction("/api/refreshAccount", { email });
+          setToast({ type: "success", message: `${email} 刷新成功` });
+          await loadAccounts();
+          await loadShell();
+        } catch (error) {
+          setToast({ type: "error", message: error instanceof Error ? error.message : `${email} 刷新失败` });
+        }
       },
       refreshAllAccounts: async (force: boolean) => {
-        const path = force ? "/api/forceRefreshAllAccounts" : "/api/refreshAllAccounts";
-        const body = force ? {} : { thresholdHours: Number(thresholdHours) || 24 };
-        await submitAction(path, body);
-        setToast({ type: "success", message: force ? "已触发全量强刷。" : "已触发阈值刷新。" });
-        await loadAccounts();
-        await loadShell();
+        try {
+          const path = force ? "/api/forceRefreshAllAccounts" : "/api/refreshAllAccounts";
+          const body = force ? {} : { thresholdHours: Number(thresholdHours) || 24 };
+          await submitAction(path, body);
+          setToast({ type: "success", message: force ? "已触发全量强刷。" : "已触发阈值刷新。" });
+          await loadAccounts();
+          await loadShell();
+        } catch (error) {
+          setToast({ type: "error", message: error instanceof Error ? error.message : "刷新失败" });
+        }
       },
       reloadRuntimeConfig: async () => {
         await submitAction("/api/reload-runtime-config", {});
