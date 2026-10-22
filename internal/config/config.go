@@ -42,8 +42,23 @@ type Config struct {
 
 func Load() Config {
 	apiKeys := parseAPIKeys(os.Getenv("API_KEY"))
-	adminKey := ""
-	if len(apiKeys) > 0 {
+	if len(apiKeys) == 0 {
+		apiKeys = parseAPIKeys(os.Getenv("API_KEYS"))
+	}
+	adminKey := strings.TrimSpace(os.Getenv("ADMIN_KEY"))
+	if adminKey != "" {
+		// Ensure adminKey is at the beginning of apiKeys
+		found := false
+		for _, k := range apiKeys {
+			if k == adminKey {
+				found = true
+				break
+			}
+		}
+		if !found {
+			apiKeys = append([]string{adminKey}, apiKeys...)
+		}
+	} else if len(apiKeys) > 0 {
 		adminKey = apiKeys[0]
 	}
 	promptOverrides := parsePromptOverrides(os.Getenv("PROMPT_OVERRIDES_JSON"))

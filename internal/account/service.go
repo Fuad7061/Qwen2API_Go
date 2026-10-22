@@ -676,6 +676,16 @@ func (s *Service) GetAccountSessionExcluding(excluded map[string]struct{}) (stor
 		filtered = append(filtered, account)
 	}
 	if len(filtered) == 0 {
+		for _, account := range s.accounts {
+			if _, ok := excluded[account.Email]; ok {
+				continue
+			}
+			if account.IsGuest() || strings.TrimSpace(account.Token) != "" || strings.TrimSpace(account.Cookie) != "" {
+				filtered = append(filtered, account)
+			}
+		}
+	}
+	if len(filtered) == 0 {
 		return storage.Account{}, errors.New("没有符合条件的可用账户令牌")
 	}
 

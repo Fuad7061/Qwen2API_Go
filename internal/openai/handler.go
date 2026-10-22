@@ -238,7 +238,12 @@ func modelSupports(meta map[string]any, feature string) bool {
 func (h *Handler) ResolveModel(ctx context.Context, requested string, chatType string) (string, error) {
 	base := splitModelSuffix(strings.TrimSpace(requested))
 	if base == "" {
-		base = "qwen3-235b-a22b"
+		base = "qwen3.7-plus"
+	}
+
+	normalized := strings.ToLower(base)
+	if normalized == "qwen-max" || normalized == "qwen-plus" || normalized == "qwen-turbo" || normalized == "qwen3-235b-a22b" || normalized == "qwen" || strings.HasPrefix(normalized, "gpt-") || normalized == "default" {
+		return "qwen3.7-plus", nil
 	}
 
 	session, err := h.accounts.GetAccountSession()
@@ -252,7 +257,6 @@ func (h *Handler) ResolveModel(ctx context.Context, requested string, chatType s
 		return base, nil
 	}
 
-	normalized := strings.ToLower(base)
 	for _, model := range models {
 		aliases := []string{
 			strings.ToLower(model.ID),
@@ -943,6 +947,11 @@ func (h *Handler) DefaultModelVariants() []map[string]any {
 
 func defaultQwenModels() []qwen.Model {
 	return []qwen.Model{
+		{
+			ID:   "qwen3.7-plus",
+			Name: "Qwen3.7-Plus",
+			Info: map[string]any{"search": true, "chat_type": "t2t"},
+		},
 		{
 			ID:   "qwen3-235b-a22b",
 			Name: "Qwen3-235B-A22B",

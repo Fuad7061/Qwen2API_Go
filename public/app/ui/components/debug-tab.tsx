@@ -3,7 +3,7 @@
 import { useTranslation } from "react-i18next";
 import { Input } from "@heroui/react";
 import { useMemo, useState } from "react";
-import { Send, Eraser, Terminal, Zap } from "lucide-react";
+import { Send, Eraser, Terminal, Zap, Copy, Check } from "lucide-react";
 import { apiRequest } from "../api";
 import type { ChatCompletionResponse, ModelItem } from "../types";
 import { EndpointItem } from "./primitives";
@@ -22,6 +22,8 @@ export function DebugTab({
   const { t } = useTranslation();
   const availableModels = useMemo(() => models.map((item) => item.id), [models]);
   const [model, setModel] = useState("");
+  const [customApiKey, setCustomApiKey] = useState(apiKey);
+  const [copied, setCopied] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState(defaultSystemPrompt || "You are a debugging assistant.");
   const [message, setMessage] = useState("Hello, please introduce yourself briefly.");
   const [temperature, setTemperature] = useState("0.7");
@@ -32,9 +34,10 @@ export function DebugTab({
   const [result, setResult] = useState<ChatCompletionResponse | null>(null);
   const [raw, setRaw] = useState("");
   const selectedModel = model || availableModels[0] || "";
+  const effectiveApiKey = customApiKey.trim() || apiKey.trim();
 
   async function submitDebugChat() {
-    if (!apiKey || !selectedModel || !message.trim()) return;
+    if (!effectiveApiKey || !selectedModel || !message.trim()) return;
     try {
       setLoading(true);
       setError("");
@@ -54,7 +57,7 @@ export function DebugTab({
       const response = await apiRequest<ChatCompletionResponse>(
         "/v1/chat/completions",
         { method: "POST", body: JSON.stringify(body) },
-        apiKey,
+        effectiveApiKey,
       );
       setResult(response);
       setRaw(JSON.stringify(response, null, 2));
@@ -183,14 +186,44 @@ export function DebugTab({
           <EndpointItem method="POST" path="/v1/chat/completions" summary="Real chat debug endpoint." />
           <EndpointItem method="POST" path="/v1/uploads" summary="OSS upload, multipart / JSON base64 / raw body." />
 
-          <pre className="admin-code mt-4">{`curl -X POST /v1/chat/completions \\
-  -H "Authorization: Bearer ${apiKey ? "***" : "sk-admin"}" \\
+          <div className="mt-4 pt-4 border-t border-[var(--border)]">
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <label className="text-xs font-semibold text-[var(--text-secondary)] uppercase tracking-wider">
+                API Key for cURL / Debug (Bearer)
+              </label>
+              <button
+                type="button"
+                className="admin-btn admin-btn-ghost text-xs py-1 px-2.5 flex items-center gap-1.5"
+                onClick={() => {
+                  const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost:3000";
+                  const curlText = `curl -X POST ${origin}/v1/chat/completions \\\n  -H "Authorization: Bearer ${effectiveApiKey || "sk-admin-change-me"}" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "${selectedModel || "qwen-max"}",\n    "stream": false,\n${reasoningEffort ? `    "reasoning_effort": "${reasoningEffort}",\n` : ""}    "messages": [{"role": "user", "content": "Hello"}]\n  }'`;
+                  navigator.clipboard.writeText(curlText).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  });
+                }}
+              >
+                {copied ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+                {copied ? "Copied!" : "Copy cURL"}
+              </button>
+            </div>
+            <Input
+              type="text"
+              size="sm"
+              value={customApiKey}
+              placeholder="Enter your API Key (e.g. sk-admin-change-me)"
+              onChange={(e) => setCustomApiKey(e.target.value)}
+              className="mono text-xs mb-3"
+            />
+            <pre className="admin-code overflow-x-auto">{`curl -X POST ${typeof window !== "undefined" ? window.location.origin : "http://localhost:3000"}/v1/chat/completions \\
+  -H "Authorization: Bearer ${effectiveApiKey || "sk-admin-change-me"}" \\
   -H "Content-Type: application/json" \\
   -d '{
-    "model":"${selectedModel || "qwen3-235b-a22b"}",
-    "stream":false,
-${reasoningEffort ? `    "reasoning_effort":"${reasoningEffort}",\n` : ""}    "messages":[{"role":"user","content":"Hello"}]
+    "model": "${selectedModel || "qwen-max"}",
+    "stream": false,
+${reasoningEffort ? `    "reasoning_effort": "${reasoningEffort}",\n` : ""}    "messages": [{"role": "user", "content": "Hello"}]
   }'`}</pre>
+          </div>
         </div>
       </div>
     </div>

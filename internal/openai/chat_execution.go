@@ -93,6 +93,7 @@ func (h *Handler) executeChatRequest(ctx context.Context, payload executedChatRe
 		sessionCtx := bindAccountContext(ctx, session)
 		executed, status, err := h.sendChatWithSession(sessionCtx, prepared, session, "", false)
 		if err == nil {
+			h.accounts.ResetFailure(session.Email)
 			if prepared.ContextHash != "" {
 				if chatID := chatIDFromStream(executed.Stream); chatID != "" {
 					h.sessions.Save(prepared.ContextHash, session.Email, chatID, prepared.Model, prepared.ChatType)
@@ -104,15 +105,18 @@ func (h *Handler) executeChatRequest(ctx context.Context, payload executedChatRe
 
 		lastErr = err
 		lastStatus = status
+		isModelErr := strings.Contains(strings.ToLower(err.Error()), "model not found")
 		if upstreamErr, ok := err.(*qwen.UpstreamError); ok {
-			h.accounts.RecordFailureAndRefresh(sessionCtx, session.Email)
+			if !isModelErr && upstreamErr.StatusCode != http.StatusBadRequest {
+				h.accounts.RecordFailureAndRefresh(sessionCtx, session.Email)
+			}
 			if shouldInvalidateConversationMapping(upstreamErr) && prepared.ContextHash != "" {
 				h.sessions.Delete(prepared.ContextHash)
 			}
 			if upstreamErr.Retryable {
 				continue
 			}
-		} else {
+		} else if !isModelErr {
 			h.accounts.RecordFailureAndRefresh(sessionCtx, session.Email)
 		}
 		return nil, status, err
