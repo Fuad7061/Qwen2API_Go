@@ -41,8 +41,9 @@ type Client struct {
 	ssxmod          *ssxmod.Manager
 	guestMu         sync.RWMutex
 	guestAuth       guestAuthState
-	browserAuth     browserAuthConfig
-	browserSessions browserSessionState
+	browserAuth      browserAuthConfig
+	browserSessions  browserSessionState
+	browserCaptureMu sync.Mutex
 }
 
 type cookieOptions struct {

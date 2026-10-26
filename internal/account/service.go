@@ -58,27 +58,31 @@ type Service struct {
 	logger   *logging.Logger
 	tokenMgr *tokenManager
 
-	mu           sync.RWMutex
-	accounts     []storage.Account
-	initialized  bool
-	currentIndex int
-	lastUsed     map[string]time.Time
-	failures     map[string]int
+	mu                 sync.RWMutex
+	accounts           []storage.Account
+	initialized        bool
+	currentIndex       int
+	lastUsed           map[string]time.Time
+	failures           map[string]int
+	lastRefreshAttempt map[string]time.Time
+	refreshFailures    map[string]int
 
 	refreshStop chan struct{}
 }
 
 func NewService(cfg config.Config, runtime *config.Runtime, store storage.AccountStore, client *qwen.Client, logger *logging.Logger) *Service {
 	return &Service{
-		cfg:         cfg,
-		runtime:     runtime,
-		store:       store,
-		client:      client,
-		logger:      logger,
-		tokenMgr:    &tokenManager{client: client, logger: logger},
-		lastUsed:    map[string]time.Time{},
-		failures:    map[string]int{},
-		refreshStop: make(chan struct{}),
+		cfg:                cfg,
+		runtime:            runtime,
+		store:              store,
+		client:             client,
+		logger:             logger,
+		tokenMgr:           &tokenManager{client: client, logger: logger},
+		lastUsed:           map[string]time.Time{},
+		failures:           map[string]int{},
+		lastRefreshAttempt: map[string]time.Time{},
+		refreshFailures:    map[string]int{},
+		refreshStop:        make(chan struct{}),
 	}
 }
 
@@ -280,9 +284,16 @@ func (s *Service) refreshExpiringAccounts() {
 	s.mu.Lock()
 	var toRefresh []storage.Account
 	now := time.Now().Unix()
+	nowTime := time.Now()
 	for _, acc := range s.accounts {
 		if acc.IsGuest() {
 			continue
+		}
+		// If an account had 3+ consecutive refresh failures, back off to once every 15 minutes
+		if s.refreshFailures[acc.Email] >= 3 {
+			if lastAttempt, exists := s.lastRefreshAttempt[acc.Email]; exists && nowTime.Sub(lastAttempt) < 15*time.Minute {
+				continue
+			}
 		}
 		if acc.Expires == 0 || now >= (acc.Expires-300) {
 			toRefresh = append(toRefresh, acc)
@@ -290,7 +301,10 @@ func (s *Service) refreshExpiringAccounts() {
 	}
 	s.mu.Unlock()
 
-	for _, acc := range toRefresh {
+	for idx, acc := range toRefresh {
+		if idx > 0 {
+			time.Sleep(3 * time.Second) // allow Chrome helper processes to cleanly terminate and release memory
+		}
 		if strings.TrimSpace(acc.Cookie) != "" {
 			s.logger.InfoModule("ACCOUNT", "账号 Access Token 即将过期或已过期，后台自动刷新 email=%s expires=%d", acc.Email, acc.Expires)
 			s.refreshBrowserSessionForAccount(context.Background(), acc)
@@ -362,15 +376,6 @@ func (s *Service) AddAccount(ctx context.Context, email, password string, cookie
 	if strings.TrimSpace(password) == "" && strings.TrimSpace(cookie) == "" {
 		return errors.New("密码和 Cookie 不能同时为空")
 	}
-
-	s.mu.RLock()
-	for _, account := range s.accounts {
-		if strings.EqualFold(account.Email, email) {
-			s.mu.RUnlock()
-			return errors.New("账号已存在")
-		}
-	}
-	s.mu.RUnlock()
 
 	if strings.TrimSpace(cookie) != "" {
 		cookie = strings.TrimSpace(cookie)
@@ -455,11 +460,29 @@ func (s *Service) AddAccountWithToken(email, password, token string, expires int
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	previous := append([]storage.Account(nil), s.accounts...)
-	for _, existing := range s.accounts {
+	for i, existing := range s.accounts {
 		if !strings.EqualFold(existing.Email, email) {
 			continue
 		}
-		return errors.New("账号已存在")
+		// Existing account found: update credentials and tokens in-place
+		if strings.TrimSpace(password) != "" {
+			s.accounts[i].Password = password
+		}
+		if strings.TrimSpace(token) != "" {
+			s.accounts[i].Token = token
+		}
+		if strings.TrimSpace(account.Cookie) != "" {
+			s.accounts[i].Cookie = account.Cookie
+		}
+		if expires > 0 {
+			s.accounts[i].Expires = expires
+		}
+		s.refreshFailures[email] = 0
+		if err := s.store.SaveAccount(s.accounts[i]); err != nil && !isReadonlyStoreError(err) {
+			s.accounts = previous
+			return err
+		}
+		return nil
 	}
 	filtered := s.accounts[:0]
 	for _, existing := range s.accounts {
@@ -470,6 +493,7 @@ func (s *Service) AddAccountWithToken(email, password, token string, expires int
 	}
 	s.accounts = filtered
 	s.accounts = append(s.accounts, account)
+	s.refreshFailures[email] = 0
 	if err := s.store.SaveAccount(account); err != nil && !isReadonlyStoreError(err) {
 		s.accounts = previous
 		return err
@@ -511,6 +535,7 @@ func (s *Service) DeleteAccount(email string) error {
 
 func (s *Service) RefreshAccount(ctx context.Context, email string) error {
 	s.mu.Lock()
+	s.refreshFailures[email] = 0
 	var refreshed storage.Account
 	for i, account := range s.accounts {
 		if !strings.EqualFold(account.Email, email) {
@@ -812,8 +837,16 @@ func (s *Service) refreshBrowserSessionForAccount(ctx context.Context, account s
 	if strings.TrimSpace(cookieHeader) == "" {
 		return errors.New("账号未配置有效的 Cookie")
 	}
+
+	s.mu.Lock()
+	s.lastRefreshAttempt[account.Email] = time.Now()
+	s.mu.Unlock()
+
 	session, err := s.client.CaptureBrowserSessionForAccount(ctx, account.BrowserSessionKey(), cookieHeader)
 	if err != nil {
+		s.mu.Lock()
+		s.refreshFailures[account.Email]++
+		s.mu.Unlock()
 		s.logger.WarnModule("ACCOUNT", "账号浏览器会话采集失败 email=%s err=%v", account.Email, err)
 		return err
 	}
@@ -822,18 +855,34 @@ func (s *Service) refreshBrowserSessionForAccount(ctx context.Context, account s
 	hasToken := session != nil && strings.TrimSpace(session.Token) != ""
 	s.logger.InfoModule("ACCOUNT", "账号浏览器会话采集完成 email=%s has_token=%v", account.Email, hasToken)
 	if !hasToken {
+		s.mu.Lock()
+		s.refreshFailures[account.Email]++
+		s.mu.Unlock()
 		return errors.New("未能从当前 Cookie 采集到有效的 Access Token，请在浏览器中重新登录网页后复制最新 Cookie")
 	}
 	exp, err := decodeExpiry(session.Token)
 	if err != nil {
+		s.mu.Lock()
+		s.refreshFailures[account.Email]++
+		s.mu.Unlock()
 		s.logger.WarnModule("ACCOUNT", "提取的 Token 解析过期时间失败: %v", err)
 		return fmt.Errorf("Token 解析失败: %w", err)
 	}
+
 	s.mu.Lock()
+	s.refreshFailures[account.Email] = 0
+	s.failures[account.Email] = 0
 	for i, acc := range s.accounts {
 		if strings.EqualFold(acc.Email, account.Email) {
 			s.accounts[i].Token = session.Token
 			s.accounts[i].Expires = exp
+			if strings.TrimSpace(session.Cookie) != "" {
+				mergedCookies := map[string]string{}
+				mergeAccountCookieHeader(mergedCookies, s.accounts[i].Cookie)
+				mergeAccountCookieHeader(mergedCookies, session.Cookie)
+				delete(mergedCookies, "token")
+				s.accounts[i].Cookie = formatAccountCookieMap(mergedCookies)
+			}
 			_ = s.store.SaveAccount(s.accounts[i])
 			s.logger.InfoModule("ACCOUNT", "账号已自动从浏览器提取最新 Access Token email=%s expires=%d", account.Email, exp)
 			break

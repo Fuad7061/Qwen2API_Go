@@ -192,6 +192,9 @@ func (c *Client) RestoreBrowserSessions(sessions map[string]BrowserSession) {
 }
 
 func (c *Client) captureBrowserSession(ctx context.Context, cookieHeader string, guest bool) (*BrowserSession, error) {
+	c.browserCaptureMu.Lock()
+	defer c.browserCaptureMu.Unlock()
+
 	timeout := c.browserAuth.Timeout
 	if timeout <= 0 {
 		timeout = defaultBrowserAuthTimeout
@@ -212,6 +215,14 @@ func (c *Client) captureBrowserSession(ctx context.Context, cookieHeader string,
 		chromedp.Flag("disable-extensions", true),
 		chromedp.Flag("disable-software-rasterizer", true),
 		chromedp.Flag("mute-audio", true),
+		chromedp.Flag("disable-crash-reporter", true),
+		chromedp.Flag("disable-breakpad", true),
+		chromedp.Flag("no-zygote", true),
+		chromedp.Flag("disable-sync", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-domain-reliability", true),
+		chromedp.Flag("disable-client-side-phishing-detection", true),
+		chromedp.Flag("disable-component-update", true),
 	)
 	if path := c.browserExecutablePath(); path != "" {
 		opts = append(opts, chromedp.ExecPath(path))

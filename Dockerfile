@@ -28,7 +28,7 @@ FROM alpine:3.22
 
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates tzdata chromium
+RUN apk add --no-cache ca-certificates tzdata chromium tini
 
 ENV CHROME_PATH=/usr/bin/chromium-browser \
     CHROME_BIN=/usr/bin/chromium-browser
@@ -39,4 +39,4 @@ COPY README.md /app/README.md
 
 EXPOSE 3000
 
-ENTRYPOINT ["/app/qwen2api"]
+ENTRYPOINT ["/sbin/tini", "--", "/app/qwen2api"]
