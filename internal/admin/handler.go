@@ -638,10 +638,12 @@ func (h *Handler) HandleGetAccounts(w http.ResponseWriter, r *http.Request) {
 			"password":       password,
 			"token":          token,
 			"hasCookie":      strings.TrimSpace(item.Cookie) != "",
-			"expires":        item.Expires,
-			"expiresAt":      expiresAt,
-			"status":         runtime.Status,
-			"remainingHours": runtime.RemainingHours,
+			"expires":             item.Expires,
+			"expiresAt":           expiresAt,
+			"status":              runtime.Status,
+			"remainingHours":      runtime.RemainingHours,
+			"cookieExpiresAt":     runtime.CookieExpiresAt,
+			"cookieRemainingDays": runtime.CookieRemainingDays,
 		})
 	}
 

@@ -21,9 +21,11 @@ import (
 )
 
 type RuntimeState struct {
-	Status         string  `json:"status"`
-	RemainingHours float64 `json:"remainingHours"`
-	ExpiresAt      string  `json:"expiresAt"`
+	Status              string  `json:"status"`
+	RemainingHours      float64 `json:"remainingHours"`
+	ExpiresAt           string  `json:"expiresAt"`
+	CookieExpiresAt     string  `json:"cookieExpiresAt,omitempty"`
+	CookieRemainingDays float64 `json:"cookieRemainingDays,omitempty"`
 }
 
 type RotationStats struct {
@@ -289,9 +291,9 @@ func (s *Service) refreshExpiringAccounts() {
 		if acc.IsGuest() {
 			continue
 		}
-		// If an account had 3+ consecutive refresh failures, back off to once every 15 minutes
+		// If an account had 3+ consecutive refresh failures, back off to once every 1 hour
 		if s.refreshFailures[acc.Email] >= 3 {
-			if lastAttempt, exists := s.lastRefreshAttempt[acc.Email]; exists && nowTime.Sub(lastAttempt) < 15*time.Minute {
+			if lastAttempt, exists := s.lastRefreshAttempt[acc.Email]; exists && nowTime.Sub(lastAttempt) < 1*time.Hour {
 				continue
 			}
 		}
@@ -948,6 +950,27 @@ func remainingHours(expires int64) float64 {
 	return float64(int(remaining*10)) / 10
 }
 
+func parseRefreshTokenExpiry(cookie string) (int64, bool) {
+	for _, part := range strings.Split(cookie, ";") {
+		part = strings.TrimSpace(part)
+		if strings.HasPrefix(part, "refresh_token=") {
+			raw := strings.TrimPrefix(part, "refresh_token=")
+			parts := strings.Split(raw, ".")
+			if len(parts) >= 2 {
+				if payload, err := base64.RawURLEncoding.DecodeString(parts[1]); err == nil {
+					var body struct {
+						Exp int64 `json:"exp"`
+					}
+					if err := json.Unmarshal(payload, &body); err == nil && body.Exp > 0 {
+						return body.Exp, true
+					}
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
 func RuntimeForAccount(account storage.Account) RuntimeState {
 	if account.IsGuest() {
 		return RuntimeState{
@@ -956,31 +979,51 @@ func RuntimeForAccount(account storage.Account) RuntimeState {
 			ExpiresAt:      "",
 		}
 	}
+
+	cookieExpAtStr := ""
+	var cookieRemainingDays float64 = 0
+	if refreshExp, ok := parseRefreshTokenExpiry(account.Cookie); ok {
+		cExpAt := time.Unix(refreshExp, 0)
+		cookieExpAtStr = cExpAt.UTC().Format(time.RFC3339)
+		cRemaining := cExpAt.Sub(time.Now())
+		if cRemaining > 0 {
+			cookieRemainingDays = float64(int(cRemaining.Hours()/24*10)) / 10
+		}
+	}
+
 	if strings.TrimSpace(account.Token) == "" || account.Expires <= 0 {
 		return RuntimeState{
-			Status:         "invalid",
-			RemainingHours: -1,
-			ExpiresAt:      "",
+			Status:              "invalid",
+			RemainingHours:      -1,
+			ExpiresAt:           "",
+			CookieExpiresAt:     cookieExpAtStr,
+			CookieRemainingDays: cookieRemainingDays,
 		}
 	}
 	expAt := time.Unix(account.Expires, 0)
 	remaining := expAt.Sub(time.Now())
 	if remaining <= 0 {
 		return RuntimeState{
-			Status:         "expired",
-			RemainingHours: 0,
-			ExpiresAt:      expAt.UTC().Format(time.RFC3339),
+			Status:              "expired",
+			RemainingHours:      0,
+			ExpiresAt:           expAt.UTC().Format(time.RFC3339),
+			CookieExpiresAt:     cookieExpAtStr,
+			CookieRemainingDays: cookieRemainingDays,
 		}
 	}
 	hours := float64(int(remaining.Hours()*10)) / 10
 	status := "valid"
-	if remaining <= 6*time.Hour {
+	// Qwen access tokens have a short lifespan (~15m). Background auto-refresh triggers at <= 5m (300s).
+	// Only mark as expiringSoon if less than 3 minutes remain before expiration and auto-refresh hasn't run.
+	if remaining <= 3*time.Minute {
 		status = "expiringSoon"
 	}
 	return RuntimeState{
-		Status:         status,
-		RemainingHours: hours,
-		ExpiresAt:      expAt.UTC().Format(time.RFC3339),
+		Status:              status,
+		RemainingHours:      hours,
+		ExpiresAt:           expAt.UTC().Format(time.RFC3339),
+		CookieExpiresAt:     cookieExpAtStr,
+		CookieRemainingDays: cookieRemainingDays,
 	}
 }
 

@@ -288,8 +288,26 @@ function AccountRow({
       <td>
         <span className={`admin-tag ${getStatusTone(account.status)}`}>{account.status}</span>
       </td>
-      <td>{formatHours(account.remainingHours)}</td>
-      <td>{formatDateTime(account.expiresAt)}</td>
+      <td>
+        <div className="flex flex-col gap-0.5">
+          <span>{formatHours(account.remainingHours)}</span>
+          {account.cookieRemainingDays && account.cookieRemainingDays > 0 ? (
+            <span className="text-[11px] text-emerald-400 font-mono">
+              Cookie: {account.cookieRemainingDays}d left
+            </span>
+          ) : null}
+        </div>
+      </td>
+      <td>
+        <div className="flex flex-col gap-0.5">
+          <span>{formatDateTime(account.expiresAt)}</span>
+          {account.cookieExpiresAt ? (
+            <span className="text-[11px] text-[var(--text-muted)]" title={`Cookie session valid until ${account.cookieExpiresAt}`}>
+              Cookie: {formatDateTime(account.cookieExpiresAt)}
+            </span>
+          ) : null}
+        </div>
+      </td>
       <td className="mono">{account.password || "-"}</td>
       <td className="mono">{account.token || "-"}</td>
       <td className="text-right">

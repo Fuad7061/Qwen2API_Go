@@ -119,6 +119,8 @@ export type AccountItem = {
   expiresAt: string | null;
   status: AccountStatus;
   remainingHours: number;
+  cookieExpiresAt?: string | null;
+  cookieRemainingDays?: number | null;
 };
 
 export type AccountsResponse = {
